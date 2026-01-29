@@ -33,3 +33,11 @@ BRENT_TICKER = "BZ=F"
 API_TITLE = "Oil Price Prediction API"
 API_DESCRIPTION = "14-day Brent oil price forecasting using VMD-based ensemble model"
 API_VERSION = "1.0.0"
+
+# NewsAPI configuration (primary)
+NEWSAPI_KEY = "e3a34ba3e5aa43e59b473f2547503d5a"
+
+# NewsData.io configuration (backup option)
+NEWSDATA_KEY = "pub_dd9bcf0c5327499098e18d5c979e1abb"
+
+

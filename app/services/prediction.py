@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 
 from statsmodels.tsa.arima.model import ARIMA
@@ -17,6 +17,7 @@ from app.services.feature_engineering import (
     prepare_sentiment_features,
     prepare_hf_features
 )
+from app.database import get_sentiment_history
 
 logger = logging.getLogger(__name__)
 
@@ -26,21 +27,25 @@ class PredictionService:
     Main prediction service that orchestrates the ensemble model.
     
     Pipeline:
-    1. Feature engineering
-    2. Component forecasts (ARIMA, Mid-GRU, Sent-GRU, XGBoost)
-    3. Meta-ensemble (Ridge)
-    4. Convert returns to prices
+    1. Fetch sentiment from database
+    2. Feature engineering (price + sentiment)
+    3. Component forecasts (ARIMA, Mid-GRU, Sent-GRU, XGBoost)
+    4. Meta-ensemble (Ridge)
+    5. Convert returns to prices
     """
     
     def __init__(self):
         self.artifacts = model_artifacts
     
-    def predict(self, prices: pd.DataFrame) -> List[Dict[str, Any]]:
+    def predict(self, prices: pd.DataFrame, 
+                sentiment_df: pd.DataFrame = None) -> List[Dict[str, Any]]:
         """
         Generate 14-day price forecast from price data.
         
         Args:
             prices: DataFrame with 'date' and 'price' columns (at least 30 days)
+            sentiment_df: Optional DataFrame with sentiment data.
+                         If None, fetches from database automatically.
         
         Returns:
             List of forecast dictionaries with date, price, return, horizon
@@ -54,9 +59,18 @@ class PredictionService:
         if len(prices) < lookback:
             raise ValueError(f"Need at least {lookback} days of data, got {len(prices)}")
         
+        # Step 0: Fetch sentiment from database if not provided
+        if sentiment_df is None:
+            logger.info("Fetching sentiment from database...")
+            sentiment_df = get_sentiment_history(days=60)
+            if sentiment_df.empty:
+                logger.warning("No sentiment data in database, using zeros")
+            else:
+                logger.info(f"Loaded {len(sentiment_df)} sentiment records")
+        
         # Step 1: Feature engineering
         logger.info("Step 1: Feature engineering")
-        df = engineer_all_features(prices, include_sentiment=True)
+        df = engineer_all_features(prices, sentiment_df=sentiment_df)
         
         # Drop NaN rows from feature computation (first few rows)
         df = df.dropna()

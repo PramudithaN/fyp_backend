@@ -69,3 +69,49 @@ class ErrorResponse(BaseModel):
     success: bool = False
     error: str
     detail: Optional[str] = None
+
+
+# ============== Sentiment Schemas ==============
+
+class SentimentInput(BaseModel):
+    """Single sentiment data point."""
+    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    daily_sentiment_decay: float = Field(..., description="Decay-weighted sentiment score")
+    news_volume: int = Field(..., ge=0, description="Number of news articles")
+    log_news_volume: float = Field(..., description="Log-transformed volume")
+    decayed_news_volume: float = Field(..., ge=0, description="Decay-weighted volume")
+    high_news_regime: int = Field(..., ge=0, le=1, description="High news flag (0 or 1)")
+    
+    @field_validator('date')
+    @classmethod
+    def validate_date(cls, v):
+        try:
+            datetime.strptime(v, '%Y-%m-%d')
+        except ValueError:
+            raise ValueError('Date must be in YYYY-MM-DD format')
+        return v
+
+
+class BulkSentimentRequest(BaseModel):
+    """Request for bulk sentiment upload."""
+    sentiment_data: List[SentimentInput] = Field(
+        ...,
+        min_length=1,
+        description="List of sentiment data points"
+    )
+
+
+class SentimentAddResponse(BaseModel):
+    """Response for adding sentiment."""
+    success: bool
+    message: str
+    total_records: int
+
+
+class SentimentHistoryResponse(BaseModel):
+    """Response for sentiment history."""
+    success: bool
+    total_records: int
+    latest_date: Optional[str]
+    data: List[dict]
+

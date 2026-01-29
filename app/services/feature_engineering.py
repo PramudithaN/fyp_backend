@@ -144,13 +144,13 @@ def compute_sentiment_emas(df: pd.DataFrame,
 
 
 def engineer_all_features(prices: pd.DataFrame, 
-                          include_sentiment: bool = False) -> pd.DataFrame:
+                          sentiment_df: pd.DataFrame = None) -> pd.DataFrame:
     """
-    Compute all features from price data.
+    Compute all features from price data, optionally merging with sentiment.
     
     Args:
         prices: DataFrame with 'date' and 'price' columns
-        include_sentiment: If True, add placeholder sentiment columns
+        sentiment_df: Optional DataFrame with sentiment data (already lagged)
     
     Returns:
         DataFrame with all engineered features
@@ -172,21 +172,51 @@ def engineer_all_features(prices: pd.DataFrame,
     # Add momentum
     df = compute_momentum(df)
     
-    # For Phase 1: Add zero sentiment features (matches training fillna behavior)
-    if include_sentiment:
+    # Handle sentiment data
+    if sentiment_df is not None and not sentiment_df.empty:
+        # Merge sentiment with price features
+        logger.info(f"Merging {len(sentiment_df)} sentiment records")
+        
+        df['date'] = pd.to_datetime(df['date'])
+        sent = sentiment_df.copy()
+        sent['date'] = pd.to_datetime(sent['date'])
+        
+        # Shift sentiment by 1 day (today's prediction uses yesterday's sentiment)
+        sent['date'] = sent['date'] + pd.Timedelta(days=1)
+        
+        # Merge
+        df = df.merge(sent, on='date', how='left')
+        
+        # Compute EMAs for sentiment columns
+        ema_cols = ['daily_sentiment_decay', 'news_volume', 
+                    'log_news_volume', 'decayed_news_volume']
+        for col in ema_cols:
+            if col in df.columns:
+                df[col] = df[col].fillna(0)
+                for w in EMA_WINDOWS:
+                    df[f'{col}_ema_{w}'] = df[col].ewm(span=w, adjust=False).mean()
+        
+        # Fill remaining sentiment columns with 0
+        for col in SENT_COLS:
+            if col in df.columns:
+                df[col] = df[col].fillna(0)
+    else:
+        # No sentiment data - add zero columns
+        logger.info("No sentiment data provided, using zeros")
         for col in SENT_COLS:
             df[col] = 0.0
         
-        # Add sentiment EMAs (all zeros)
-        sent_cols_for_ema = ['daily_sentiment_decay', 'news_volume', 
-                             'log_news_volume', 'decayed_news_volume']
-        for col in sent_cols_for_ema:
+        # Add zero sentiment EMAs
+        ema_cols = ['daily_sentiment_decay', 'news_volume', 
+                    'log_news_volume', 'decayed_news_volume']
+        for col in ema_cols:
             for w in EMA_WINDOWS:
                 df[f'{col}_ema_{w}'] = 0.0
     
     logger.info(f"Feature engineering complete. Shape: {df.shape}")
     
     return df
+
 
 
 def get_mid_freq_features() -> List[str]:
