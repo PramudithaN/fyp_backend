@@ -1,0 +1,324 @@
+"""
+Feature engineering service - replicates training feature computation exactly.
+
+CRITICAL: All feature definitions MUST match the training code exactly.
+"""
+import numpy as np
+import pandas as pd
+from typing import Tuple, List
+import logging
+
+from app.config import LAGS, VOL_WINDOWS, EMA_WINDOWS, SENT_COLS
+
+logger = logging.getLogger(__name__)
+
+
+def compute_log_returns(prices: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute log prices and log returns from price data.
+    
+    Args:
+        prices: DataFrame with 'date' and 'price' columns
+    
+    Returns:
+        DataFrame with additional 'log_price' and 'log_return' columns
+    """
+    df = prices.copy()
+    df['log_price'] = np.log(df['price'])
+    df['log_return'] = df['log_price'].diff()
+    return df
+
+
+def compute_lagged_returns(df: pd.DataFrame, lags: List[int] = None) -> pd.DataFrame:
+    """
+    Compute lagged returns.
+    
+    Args:
+        df: DataFrame with 'log_return' column
+        lags: List of lag values (default: [1, 2, 3, 5, 7, 10, 14])
+    
+    Returns:
+        DataFrame with added lag columns
+    """
+    if lags is None:
+        lags = LAGS
+    
+    result = df.copy()
+    for lag in lags:
+        result[f'ret_lag_{lag}'] = result['log_return'].shift(lag)
+    
+    return result
+
+
+def compute_volatility(df: pd.DataFrame, windows: List[int] = None) -> pd.DataFrame:
+    """
+    Compute rolling volatility (standard deviation of returns).
+    
+    Args:
+        df: DataFrame with 'log_return' column
+        windows: List of window sizes (default: [5, 10, 14])
+    
+    Returns:
+        DataFrame with added volatility columns
+    """
+    if windows is None:
+        windows = VOL_WINDOWS
+    
+    result = df.copy()
+    for w in windows:
+        result[f'vol_{w}'] = result['log_return'].rolling(w).std()
+    
+    return result
+
+
+def compute_rsi(series: pd.Series, window: int = 14) -> pd.Series:
+    """
+    Compute Relative Strength Index (RSI).
+    
+    Args:
+        series: Series of returns
+        window: RSI window (default: 14)
+    
+    Returns:
+        Series of RSI values
+    """
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    
+    avg_gain = gain.rolling(window).mean()
+    avg_loss = loss.rolling(window).mean()
+    
+    rs = avg_gain / (avg_loss + 1e-8)  # Avoid division by zero
+    return 100 - (100 / (1 + rs))
+
+
+def compute_momentum(df: pd.DataFrame, windows: List[int] = None) -> pd.DataFrame:
+    """
+    Compute momentum indicators.
+    
+    Args:
+        df: DataFrame with 'log_return' column
+        windows: List of momentum windows (default: [7, 14])
+    
+    Returns:
+        DataFrame with added momentum columns
+    """
+    if windows is None:
+        windows = [7, 14]
+    
+    result = df.copy()
+    for w in windows:
+        result[f'momentum_{w}'] = result['log_return'] - result['log_return'].shift(w)
+    
+    return result
+
+
+def compute_sentiment_emas(df: pd.DataFrame, 
+                           sent_cols: List[str] = None,
+                           windows: List[int] = None) -> pd.DataFrame:
+    """
+    Compute EMA-smoothed sentiment features.
+    
+    Args:
+        df: DataFrame with sentiment columns
+        sent_cols: List of sentiment column names
+        windows: List of EMA windows (default: [3, 7, 14])
+    
+    Returns:
+        DataFrame with added EMA columns
+    """
+    if sent_cols is None:
+        sent_cols = ['daily_sentiment_decay', 'news_volume', 
+                     'log_news_volume', 'decayed_news_volume']
+    if windows is None:
+        windows = EMA_WINDOWS
+    
+    result = df.copy()
+    for col in sent_cols:
+        if col in result.columns:
+            for w in windows:
+                result[f'{col}_ema_{w}'] = result[col].ewm(span=w, adjust=False).mean()
+    
+    return result
+
+
+def engineer_all_features(prices: pd.DataFrame, 
+                          include_sentiment: bool = False) -> pd.DataFrame:
+    """
+    Compute all features from price data.
+    
+    Args:
+        prices: DataFrame with 'date' and 'price' columns
+        include_sentiment: If True, add placeholder sentiment columns
+    
+    Returns:
+        DataFrame with all engineered features
+    """
+    logger.info("Starting feature engineering...")
+    
+    # Start with log returns
+    df = compute_log_returns(prices)
+    
+    # Add lagged returns
+    df = compute_lagged_returns(df)
+    
+    # Add volatility
+    df = compute_volatility(df)
+    
+    # Add RSI
+    df['rsi_14'] = compute_rsi(df['log_return'], 14)
+    
+    # Add momentum
+    df = compute_momentum(df)
+    
+    # For Phase 1: Add zero sentiment features (matches training fillna behavior)
+    if include_sentiment:
+        for col in SENT_COLS:
+            df[col] = 0.0
+        
+        # Add sentiment EMAs (all zeros)
+        sent_cols_for_ema = ['daily_sentiment_decay', 'news_volume', 
+                             'log_news_volume', 'decayed_news_volume']
+        for col in sent_cols_for_ema:
+            for w in EMA_WINDOWS:
+                df[f'{col}_ema_{w}'] = 0.0
+    
+    logger.info(f"Feature engineering complete. Shape: {df.shape}")
+    
+    return df
+
+
+def get_mid_freq_features() -> List[str]:
+    """
+    Get list of mid-frequency feature column names.
+    Must match training exactly.
+    """
+    return [
+        'log_return',
+        *[f'ret_lag_{l}' for l in LAGS],
+        *[f'vol_{w}' for w in VOL_WINDOWS],
+        'rsi_14',
+        'momentum_7',
+        'momentum_14'
+    ]
+
+
+def get_price_features() -> List[str]:
+    """
+    Get list of price feature column names for Sentiment-GRU.
+    Must match training exactly - 13 features (no log_return).
+    """
+    # These are the exact price_features from training config
+    return [
+        *[f'ret_lag_{l}' for l in LAGS],  # 7 features
+        *[f'vol_{w}' for w in VOL_WINDOWS],  # 3 features
+        'rsi_14',
+        'momentum_7',
+        'momentum_14'
+    ]  # Total: 13 features
+
+
+def get_sentiment_features() -> List[str]:
+    """
+    Get list of sentiment feature column names for Sentiment-GRU.
+    Must match training exactly.
+    """
+    # Base sentiment columns
+    base_cols = ['daily_sentiment_decay', 'news_volume', 
+                 'log_news_volume', 'decayed_news_volume', 'high_news_regime']
+    
+    # EMA columns
+    ema_cols = []
+    for col in ['daily_sentiment_decay', 'news_volume', 
+                'log_news_volume', 'decayed_news_volume']:
+        for w in EMA_WINDOWS:
+            ema_cols.append(f'{col}_ema_{w}')
+    
+    return base_cols + ema_cols
+
+
+def get_hf_features() -> List[str]:
+    """
+    Get list of high-frequency feature column names for XGBoost.
+    Must match training exactly.
+    """
+    return [
+        'log_return',
+        'ret_lag_1',
+        'ret_lag_2',
+        'ret_lag_3',
+        'vol_5',
+        'daily_sentiment_decay_ema_3',
+        'news_volume_ema_3',
+        'high_news_regime'
+    ]
+
+
+def prepare_mid_features(df: pd.DataFrame, lookback: int = 30) -> np.ndarray:
+    """
+    Prepare mid-frequency features for GRU input.
+    
+    Args:
+        df: DataFrame with all features
+        lookback: Number of timesteps for sequence
+    
+    Returns:
+        numpy array of shape (1, lookback, n_features)
+    """
+    feature_cols = get_mid_freq_features()
+    
+    # Get last 'lookback' rows
+    data = df[feature_cols].tail(lookback)
+    
+    # Drop any rows with NaN (should be handled before this point)
+    if data.isna().any().any():
+        logger.warning("NaN values found in mid features, filling with 0")
+        data = data.fillna(0)
+    
+    return data.values.reshape(1, lookback, -1)
+
+
+def prepare_sentiment_features(df: pd.DataFrame, 
+                               lookback: int = 30) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Prepare price and sentiment features for Sentiment-GRU input.
+    
+    Args:
+        df: DataFrame with all features
+        lookback: Number of timesteps for sequence
+    
+    Returns:
+        Tuple of (price_features, sentiment_features) arrays
+        Each of shape (1, lookback, n_features)
+    """
+    price_cols = get_price_features()
+    sent_cols = get_sentiment_features()
+    
+    # Get last 'lookback' rows
+    price_data = df[price_cols].tail(lookback).fillna(0).values
+    sent_data = df[sent_cols].tail(lookback).fillna(0).values
+    
+    return (
+        price_data.reshape(1, lookback, -1),
+        sent_data.reshape(1, lookback, -1)
+    )
+
+
+def prepare_hf_features(df: pd.DataFrame) -> np.ndarray:
+    """
+    Prepare high-frequency features for XGBoost input.
+    Uses only the most recent day.
+    
+    Args:
+        df: DataFrame with all features
+    
+    Returns:
+        numpy array of shape (1, n_features)
+    """
+    feature_cols = get_hf_features()
+    
+    # Get only the last row
+    data = df[feature_cols].tail(1).fillna(0).values
+    
+    return data
