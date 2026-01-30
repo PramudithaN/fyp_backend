@@ -129,7 +129,7 @@ def compute_sentiment_emas(df: pd.DataFrame,
         DataFrame with added EMA columns
     """
     if sent_cols is None:
-        sent_cols = ['daily_sentiment_decay', 'news_volume', 
+        sent_cols = ['daily_sentiment', 'news_volume', 
                      'log_news_volume', 'decayed_news_volume']
     if windows is None:
         windows = EMA_WINDOWS
@@ -141,6 +141,8 @@ def compute_sentiment_emas(df: pd.DataFrame,
                 result[f'{col}_ema_{w}'] = result[col].ewm(span=w, adjust=False).mean()
     
     return result
+
+
 
 
 def engineer_all_features(prices: pd.DataFrame, 
@@ -184,8 +186,17 @@ def engineer_all_features(prices: pd.DataFrame,
         # Shift sentiment by 1 day (today's prediction uses yesterday's sentiment)
         sent['date'] = sent['date'] + pd.Timedelta(days=1)
         
+        # Rename daily_sentiment to daily_sentiment_decay
+        # (No decay applied here - sentiment is already processed by FinBERT model)
+        if 'daily_sentiment' in sent.columns:
+            sent['daily_sentiment_decay'] = sent['daily_sentiment']
+        
         # Merge
         df = df.merge(sent, on='date', how='left')
+        
+        # Fill NaN sentiment with 0
+        if 'daily_sentiment_decay' in df.columns:
+            df['daily_sentiment_decay'] = df['daily_sentiment_decay'].fillna(0)
         
         # Compute EMAs for sentiment columns
         ema_cols = ['daily_sentiment_decay', 'news_volume', 
@@ -203,6 +214,11 @@ def engineer_all_features(prices: pd.DataFrame,
     else:
         # No sentiment data - add zero columns
         logger.info("No sentiment data provided, using zeros")
+        
+        # Add base sentiment column
+        df['daily_sentiment'] = 0.0
+        df['daily_sentiment_decay'] = 0.0
+        
         for col in SENT_COLS:
             df[col] = 0.0
         

@@ -1,5 +1,8 @@
 """
 Database layer for sentiment storage using SQLite.
+
+NOTE: The database stores raw daily_sentiment (simple mean).
+Cross-day decay is applied at retrieval time by sentiment_service.py
 """
 import sqlite3
 from pathlib import Path
@@ -31,6 +34,8 @@ def init_database() -> None:
     cursor = conn.cursor()
     
     # Create sentiment history table
+    # Note: daily_sentiment_decay column stores the RAW daily sentiment
+    # (simple mean of article scores). Cross-day decay is applied at read time.
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sentiment_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,10 +72,10 @@ def add_sentiment(
     
     Args:
         date_str: Date in YYYY-MM-DD format
-        daily_sentiment_decay: Decay-weighted sentiment score
+        daily_sentiment_decay: Raw daily sentiment (simple mean, no cross-day decay)
         news_volume: Number of news articles
         log_news_volume: Log-transformed volume
-        decayed_news_volume: Decay-weighted volume
+        decayed_news_volume: EWM-based volume estimate
         high_news_regime: Binary flag (0 or 1)
     
     Returns:
@@ -89,7 +94,7 @@ def add_sentiment(
               decayed_news_volume, high_news_regime))
         
         conn.commit()
-        logger.info(f"Added sentiment for {date_str}")
+        logger.info(f"Added sentiment for {date_str}: {daily_sentiment_decay:.4f}")
         return True
     
     except Exception as e:
@@ -117,6 +122,10 @@ def add_bulk_sentiment(sentiment_list: List[Dict[str, Any]]) -> int:
     count = 0
     try:
         for record in sentiment_list:
+            # Support both 'daily_sentiment' and 'daily_sentiment_decay' keys
+            sentiment_value = record.get('daily_sentiment_decay', 
+                                        record.get('daily_sentiment', 0.0))
+            
             cursor.execute("""
                 INSERT OR REPLACE INTO sentiment_history 
                 (date, daily_sentiment_decay, news_volume, log_news_volume, 
@@ -124,7 +133,7 @@ def add_bulk_sentiment(sentiment_list: List[Dict[str, Any]]) -> int:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 record['date'],
-                record['daily_sentiment_decay'],
+                sentiment_value,
                 record['news_volume'],
                 record['log_news_volume'],
                 record['decayed_news_volume'],
@@ -149,16 +158,20 @@ def get_sentiment_history(days: int = 60) -> pd.DataFrame:
     """
     Get sentiment history for the last N days.
     
+    Note: Returns column as 'daily_sentiment' for feature_engineering.py
+    which will apply its own alpha decay.
+    
     Args:
         days: Number of days of history to retrieve
     
     Returns:
-        DataFrame with sentiment data
+        DataFrame with sentiment data (daily_sentiment column = raw daily mean)
     """
     conn = get_connection()
     
+    # Rename column to daily_sentiment for feature_engineering.py compatibility
     query = """
-        SELECT date, daily_sentiment_decay, news_volume, log_news_volume,
+        SELECT date, daily_sentiment_decay as daily_sentiment, news_volume, log_news_volume,
                decayed_news_volume, high_news_regime
         FROM sentiment_history
         ORDER BY date DESC
@@ -189,7 +202,7 @@ def get_sentiment_for_dates(start_date: str, end_date: str) -> pd.DataFrame:
     conn = get_connection()
     
     query = """
-        SELECT date, daily_sentiment_decay, news_volume, log_news_volume,
+        SELECT date, daily_sentiment_decay as daily_sentiment, news_volume, log_news_volume,
                decayed_news_volume, high_news_regime
         FROM sentiment_history
         WHERE date >= ? AND date <= ?
@@ -233,4 +246,25 @@ def get_sentiment_count() -> int:
     cursor.execute("SELECT COUNT(*) FROM sentiment_history")
     count = cursor.fetchone()[0]
     conn.close()
+    return count
+
+
+def clear_sentiment_history() -> int:
+    """
+    Clear all sentiment records from the database.
+    
+    Returns:
+        Number of records deleted
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM sentiment_history")
+    count = cursor.fetchone()[0]
+    
+    cursor.execute("DELETE FROM sentiment_history")
+    conn.commit()
+    conn.close()
+    
+    logger.info(f"Cleared {count} sentiment records")
     return count

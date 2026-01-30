@@ -132,100 +132,49 @@ async def get_prices():
 
 
 @app.get("/predict", response_model=PredictionResponse)
-async def predict_auto():
+async def predict_now():
     """
-    Auto-predict: Fetch latest prices from Yahoo Finance and generate forecast.
+    Generate a 14-day forecast based on real-time data.
     
-    This endpoint automatically:
-    1. Fetches historical Brent oil prices (enough for feature engineering)
-    2. Computes technical features
-    3. Runs the ensemble model
-    4. Returns 14-day price forecast
-    
-    No input required - prices are fetched automatically.
+    This endpoint:
+    1. Fetches current Brent oil prices from Yahoo Finance.
+    2. Automatically gathers missing news sentiments for the last 30 days.
+    3. Analyzes news articles using the custom FinBERT model.
+    4. Generates a multi-step forecast using the ensemble model.
     """
     try:
-        # Fetch latest prices (need ~60 days for feature engineering)
-        logger.info("Fetching latest prices from Yahoo Finance...")
-        all_prices = fetch_latest_prices(lookback_days=90)
+        # Generate predictions using the automated end-to-end service
+        forecasts = prediction_service.predict(days_of_history=30)
         
-        # Pass all prices to prediction service
-        # (it needs extra data for feature engineering like lags and rolling windows)
-        logger.info(f"Fetched {len(all_prices)} days of price data")
-        
-        # Generate predictions
-        logger.info("Running prediction pipeline...")
-        forecasts = prediction_service.predict(all_prices)
+        # Get latest price for response metadata
+        from app.services.price_fetcher import fetch_latest_prices
+        latest_prices = fetch_latest_prices(lookback_days=5)
+        last_price = float(latest_prices['price'].iloc[-1])
+        last_date = str(latest_prices['date'].iloc[-1].date())
         
         return PredictionResponse(
             success=True,
             data_source=f"Yahoo Finance ({BRENT_TICKER})",
-            last_price_date=str(all_prices['date'].iloc[-1]),
-            last_price=round(float(all_prices['price'].iloc[-1]), 2),
+            last_price_date=last_date,
+            last_price=round(last_price, 2),
             forecasts=forecasts
         )
     
     except ValueError as e:
         logger.error(f"Validation error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
-    
     except Exception as e:
         logger.error(f"Prediction error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/predict", response_model=PredictionResponse)
-async def predict_manual(request: PredictionRequest):
-    """
-    Manual predict: Use user-provided prices for prediction.
-    
-    Useful for:
-    - Backtesting with historical data
-    - Testing with custom scenarios
-    - When Yahoo Finance is unavailable
-    
-    Request body must include at least 30 days of price data.
-    """
-    try:
-        # Convert request to DataFrame
-        prices = pd.DataFrame([
-            {'date': p.date, 'price': p.price}
-            for p in request.prices
-        ])
-        prices['date'] = pd.to_datetime(prices['date'])
-        prices = prices.sort_values('date').reset_index(drop=True)
-        
-        # Validate
-        if len(prices) < model_artifacts.lookback:
-            raise ValueError(
-                f"Need at least {model_artifacts.lookback} days of data, "
-                f"got {len(prices)}"
-            )
-        
-        # Generate predictions
-        logger.info("Running prediction pipeline with custom data...")
-        forecasts = prediction_service.predict(prices)
-        
-        return PredictionResponse(
-            success=True,
-            data_source="User provided",
-            last_price_date=str(prices['date'].iloc[-1].date()),
-            last_price=round(float(prices['price'].iloc[-1]), 2),
-            forecasts=forecasts
-        )
-    
-    except ValueError as e:
-        logger.error(f"Validation error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-    
-    except Exception as e:
-        logger.error(f"Prediction error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Removed /predict [POST] as it adds complexity and deviates from the automated clean flow.
+# The GET /predict endpoint is now the definitive way to get forecasts.
 
 
 @app.get("/model-info")
 async def model_info():
-    """Get information about the loaded model."""
+    """Get information about the loaded models and system status."""
     sent_info = sentiment_service.get_latest_info()
     
     return {
@@ -237,7 +186,7 @@ async def model_info():
         "sentiment_data": {
             "total_records": sent_info["total_records"],
             "latest_date": sent_info["latest_date"],
-            "status": "active" if sent_info["total_records"] > 30 else "needs_more_data"
+            "integration_status": "DISABLED (Price-Only Mode)"
         },
         "components": {
             "arima": "Trend forecasting",
@@ -249,187 +198,14 @@ async def model_info():
     }
 
 
-# ============== Sentiment Endpoints ==============
-
-@app.post("/sentiment/add", response_model=SentimentAddResponse)
-async def add_sentiment(sentiment: SentimentInput):
-    """
-    Add sentiment data for a specific date.
-    
-    This data will be used for predictions made on the following day
-    (sentiment is automatically lagged by 1 day).
-    
-    Example:
-    - Add sentiment for Jan 29
-    - When predicting on Jan 30, the model uses Jan 29's sentiment
-    """
-    try:
-        result = sentiment_service.add_daily_sentiment(
-            date_str=sentiment.date,
-            daily_sentiment_decay=sentiment.daily_sentiment_decay,
-            news_volume=sentiment.news_volume,
-            log_news_volume=sentiment.log_news_volume,
-            decayed_news_volume=sentiment.decayed_news_volume,
-            high_news_regime=sentiment.high_news_regime
-        )
-        
-        return SentimentAddResponse(**result)
-    
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error adding sentiment: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/sentiment/bulk", response_model=SentimentAddResponse)
-async def add_bulk_sentiment(request: BulkSentimentRequest):
-    """
-    Bulk upload sentiment data.
-    
-    Useful for initializing the system with historical sentiment data.
-    Existing records for the same dates will be updated.
-    """
-    try:
-        sentiment_list = [s.model_dump() for s in request.sentiment_data]
-        result = sentiment_service.add_bulk_sentiment(sentiment_list)
-        
-        return SentimentAddResponse(
-            success=True,
-            message=f"Added {result['records_added']} sentiment records",
-            total_records=result["total_records"]
-        )
-    
-    except Exception as e:
-        logger.error(f"Error in bulk upload: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/sentiment", response_model=SentimentHistoryResponse)
-async def get_sentiment_history(days: int = 30):
-    """
-    View stored sentiment history.
-    
-    Args:
-        days: Number of days of history to retrieve (default: 30)
-    
-    Returns the most recent sentiment records.
-    """
-    try:
-        info = sentiment_service.get_latest_info()
-        df = sentiment_service.get_sentiment_window(days=days)
-        
-        data = []
-        if not df.empty:
-            df['date'] = df['date'].dt.strftime('%Y-%m-%d')
-            data = df.to_dict(orient='records')
-        
-        return SentimentHistoryResponse(
-            success=True,
-            total_records=info["total_records"],
-            latest_date=info["latest_date"],
-            data=data
-        )
-    
-    except Exception as e:
-        logger.error(f"Error fetching sentiment: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/sentiment/fetch")
-async def fetch_news_sentiment(
-    date: str = None,
-    api_key: str = None,
-    save: bool = True
-):
-    """
-    Auto-fetch oil news from NewsAPI and compute sentiment features.
-    
-    This endpoint:
-    1. Fetches oil-related news articles from NewsAPI
-    2. Computes sentiment features using decay-weighted averaging
-    3. Optionally saves to database
-    
-    Args:
-        date: Date to fetch news for (YYYY-MM-DD). Default: yesterday.
-        api_key: NewsAPI key. Can also be set via NEWSAPI_KEY env var.
-        save: If True (default), automatically saves to database.
-    
-    Note: You need a free NewsAPI key from https://newsapi.org
-    """
-    try:
-        from app.services.news_fetcher import fetch_and_compute_sentiment
-        
-        # Compute sentiment from news
-        result = fetch_and_compute_sentiment(date=date, api_key=api_key)
-        
-        # Save to database if requested
-        if save:
-            sentiment_service.add_daily_sentiment(
-                date_str=result["date"],
-                daily_sentiment_decay=result["daily_sentiment_decay"],
-                news_volume=result["news_volume"],
-                log_news_volume=result["log_news_volume"],
-                decayed_news_volume=result["decayed_news_volume"],
-                high_news_regime=result["high_news_regime"]
-            )
-            result["saved_to_db"] = True
-        else:
-            result["saved_to_db"] = False
-        
-        result["success"] = True
-        return result
-    
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error fetching news sentiment: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/sentiment/auto-update")
-async def auto_update_sentiment(api_key: str = None):
-    """
-    Convenience endpoint: Fetch yesterday's news, compute sentiment, and save.
-    
-    Call this daily (e.g., via cron) to keep sentiment data up to date.
-    
-    Args:
-        api_key: NewsAPI key. Can also be set via NEWSAPI_KEY env var.
-    
-    Returns:
-        The computed and saved sentiment features.
-    """
-    from datetime import datetime, timedelta
-    
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    
-    try:
-        from app.services.news_fetcher import fetch_and_compute_sentiment
-        
-        result = fetch_and_compute_sentiment(date=yesterday, api_key=api_key)
-        
-        # Save to database
-        sentiment_service.add_daily_sentiment(
-            date_str=result["date"],
-            daily_sentiment_decay=result["daily_sentiment_decay"],
-            news_volume=result["news_volume"],
-            log_news_volume=result["log_news_volume"],
-            decayed_news_volume=result["decayed_news_volume"],
-            high_news_regime=result["high_news_regime"]
-        )
-        
-        return {
-            "success": True,
-            "message": f"Sentiment for {yesterday} fetched and saved",
-            "data": result
-        }
-    
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error in auto-update: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get("/health")
+async def health_check():
+    """Health status check."""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": API_VERSION
+    }
 
 
 if __name__ == "__main__":
