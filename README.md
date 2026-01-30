@@ -1,3 +1,13 @@
+---
+title: Oil Price Prediction API
+emoji: 🛢️
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Oil Price Prediction Backend
 
 FastAPI backend for Brent oil price forecasting using a trained ensemble model.
@@ -7,8 +17,9 @@ FastAPI backend for Brent oil price forecasting using a trained ensemble model.
 - **14-day price forecast** using VMD-based ensemble model
 - **Automatic price fetching** from Yahoo Finance (BZ=F ticker)
 - **REST API** with both auto and manual prediction modes
+- **Sentiment Analysis** using FinBERT
 
-## Quick Start
+## Quick Start (Local Development)
 
 ```bash
 # Install dependencies
@@ -26,6 +37,10 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 | `/predict` | POST   | Predict with custom prices    |
 | `/prices`  | GET    | View fetched price data       |
 | `/health`  | GET    | Health check                  |
+| `/sentiment/add` | POST | Add daily sentiment      |
+| `/sentiment/bulk` | POST | Bulk upload sentiment   |
+| `/sentiment` | GET  | View sentiment history        |
+| `/docs`    | GET    | Swagger API Documentation     |
 
 ## Example Usage
 
