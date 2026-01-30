@@ -99,3 +99,5 @@ ehthumbs.db
 *.temp
 .temp/
 tmp/
+*.db
+sentiment_history.db
