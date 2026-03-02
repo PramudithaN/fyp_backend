@@ -11,7 +11,7 @@ Can also be triggered manually via run_scraper_now().
 """
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -111,6 +111,117 @@ def run_scraper_now(target_date: str = None) -> Dict[str, Any]:
     return _run_daily_scrape(target_date=target_date)
 
 
+def _check_existing_dates(all_dates: List[str]) -> set:
+    """
+    Check which dates already have sentiment data.
+    
+    Args:
+        all_dates: List of date strings to check
+    
+    Returns:
+        Set of date strings that already exist in database
+    """
+    from app.database import get_sentiment_for_dates
+    import pandas as pd
+    
+    if not all_dates:
+        return set()
+    
+    existing_df = get_sentiment_for_dates(all_dates[0], all_dates[-1])
+    if existing_df.empty:
+        return set()
+    
+    return set(pd.to_datetime(existing_df['date']).dt.strftime("%Y-%m-%d"))
+
+
+def _process_date_with_articles(date_str: str, articles: List[Dict]) -> Dict[str, Any]:
+    """
+    Process a date that has articles by computing sentiment.
+    
+    Args:
+        date_str: Date string (YYYY-MM-DD)
+        articles: List of article dictionaries
+    
+    Returns:
+        Result dictionary with status and sentiment info
+    """
+    from app.services.news_fetcher import compute_sentiment_features
+    from app.services.sentiment_service import sentiment_service
+    
+    try:
+        features = compute_sentiment_features(articles)
+        sentiment_service.add_daily_sentiment(
+            date_str=date_str,
+            daily_sentiment=features["daily_sentiment_decay"],
+            news_volume=features["news_volume"],
+            log_news_volume=features["log_news_volume"],
+            decayed_news_volume=features["decayed_news_volume"],
+            high_news_regime=features["high_news_regime"],
+        )
+        return {
+            "status": "filled",
+            "articles": len(articles),
+            "sentiment": features["daily_sentiment_decay"],
+        }
+    except Exception as e:
+        logger.error(f"[Backfill] Failed to process {date_str}: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def _process_date_without_articles(date_str: str) -> Dict[str, Any]:
+    """
+    Process a date with no articles by applying sentiment decay.
+    
+    Args:
+        date_str: Date string (YYYY-MM-DD)
+    
+    Returns:
+        Result dictionary with status and sentiment info
+    """
+    from app.services.sentiment_service import sentiment_service
+    
+    try:
+        decay_result = sentiment_service.apply_no_news_decay(date_str)
+        return {
+            "status": "decayed",
+            "sentiment": decay_result.get("decayed_sentiment", 0.0),
+        }
+    except Exception as e:
+        logger.error(f"[Backfill] Decay failed for {date_str}: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+def _compute_backfill_summary(per_date_results: Dict[str, Dict], 
+                             started_at: str, 
+                             days_back: int) -> Dict[str, Any]:
+    """
+    Compute summary statistics for backfill operation.
+    
+    Args:
+        per_date_results: Dictionary of per-date results
+        started_at: ISO timestamp when backfill started
+        days_back: Number of days that were backfilled
+    
+    Returns:
+        Summary dictionary
+    """
+    filled = sum(1 for v in per_date_results.values() if v["status"] == "filled")
+    decayed = sum(1 for v in per_date_results.values() if v["status"] == "decayed")
+    skipped = sum(1 for v in per_date_results.values() if v["status"] == "skipped")
+    errors = sum(1 for v in per_date_results.values() if v["status"] == "error")
+    
+    return {
+        "started_at": started_at,
+        "completed_at": datetime.now().isoformat(),
+        "days_back": days_back,
+        "days_filled": filled,
+        "days_decayed": decayed,
+        "days_skipped": skipped,
+        "days_errored": errors,
+        "details": per_date_results,
+    }
+
+
 def backfill_history(days_back: int = 30, max_pages_per_site: int = 15) -> Dict[str, Any]:
     """
     Backfill the last N days of sentiment history by paginating through
@@ -131,9 +242,6 @@ def backfill_history(days_back: int = 30, max_pages_per_site: int = 15) -> Dict[
         Summary dict with per-date results.
     """
     from app.services.news_scraper import scrape_all_sources_multiday
-    from app.services.news_fetcher import compute_sentiment_features
-    from app.services.sentiment_service import sentiment_service
-    from app.database import get_sentiment_for_dates
 
     logger.info(f"[Backfill] Starting {days_back}-day backfill (max {max_pages_per_site} pages/site)")
     started_at = datetime.now().isoformat()
@@ -151,14 +259,7 @@ def backfill_history(days_back: int = 30, max_pages_per_site: int = 15) -> Dict[
     )
 
     # Step 3: Check which dates already have data
-    if all_dates:
-        existing_df = get_sentiment_for_dates(all_dates[0], all_dates[-1])
-        existing_dates = set()
-        if not existing_df.empty:
-            import pandas as pd
-            existing_dates = set(pd.to_datetime(existing_df['date']).dt.strftime("%Y-%m-%d"))
-    else:
-        existing_dates = set()
+    existing_dates = _check_existing_dates(all_dates)
 
     # Step 4: Process each date chronologically
     per_date_results = {}
@@ -169,56 +270,16 @@ def backfill_history(days_back: int = 30, max_pages_per_site: int = 15) -> Dict[
 
         articles = articles_by_date.get(date_str, [])
         if articles:
-            try:
-                features = compute_sentiment_features(articles)
-                sentiment_service.add_daily_sentiment(
-                    date_str=date_str,
-                    daily_sentiment=features["daily_sentiment_decay"],
-                    news_volume=features["news_volume"],
-                    log_news_volume=features["log_news_volume"],
-                    decayed_news_volume=features["decayed_news_volume"],
-                    high_news_regime=features["high_news_regime"],
-                )
-                per_date_results[date_str] = {
-                    "status": "filled",
-                    "articles": len(articles),
-                    "sentiment": features["daily_sentiment_decay"],
-                }
-            except Exception as e:
-                logger.error(f"[Backfill] Failed to process {date_str}: {e}")
-                per_date_results[date_str] = {"status": "error", "error": str(e)}
+            per_date_results[date_str] = _process_date_with_articles(date_str, articles)
         else:
-            # No articles for this date → apply decay
-            try:
-                decay_result = sentiment_service.apply_no_news_decay(date_str)
-                per_date_results[date_str] = {
-                    "status": "decayed",
-                    "sentiment": decay_result.get("decayed_sentiment", 0.0),
-                }
-            except Exception as e:
-                logger.error(f"[Backfill] Decay failed for {date_str}: {e}")
-                per_date_results[date_str] = {"status": "error", "error": str(e)}
+            per_date_results[date_str] = _process_date_without_articles(date_str)
 
     # Summary stats
-    filled = sum(1 for v in per_date_results.values() if v["status"] == "filled")
-    decayed = sum(1 for v in per_date_results.values() if v["status"] == "decayed")
-    skipped = sum(1 for v in per_date_results.values() if v["status"] == "skipped")
-    errors = sum(1 for v in per_date_results.values() if v["status"] == "error")
-
-    summary = {
-        "started_at": started_at,
-        "completed_at": datetime.now().isoformat(),
-        "days_back": days_back,
-        "days_filled": filled,
-        "days_decayed": decayed,
-        "days_skipped": skipped,
-        "days_errored": errors,
-        "details": per_date_results,
-    }
+    summary = _compute_backfill_summary(per_date_results, started_at, days_back)
 
     logger.info(
-        f"[Backfill] Complete: {filled} filled, {decayed} decayed, "
-        f"{skipped} skipped, {errors} errors"
+        f"[Backfill] Complete: {summary['days_filled']} filled, {summary['days_decayed']} decayed, "
+        f"{summary['days_skipped']} skipped, {summary['days_errored']} errors"
     )
     return summary
 

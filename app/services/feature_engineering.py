@@ -145,6 +145,127 @@ def compute_sentiment_emas(df: pd.DataFrame,
 
 
 
+def _prepare_sentiment_for_merge(sentiment_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prepare sentiment data for merging with price features.
+    
+    Args:
+        sentiment_df: Raw sentiment DataFrame
+    
+    Returns:
+        Prepared sentiment DataFrame with shifted dates
+    """
+    sent = sentiment_df.copy()
+    sent['date'] = pd.to_datetime(sent['date'])
+    
+    # Shift sentiment by 1 day (today's prediction uses yesterday's sentiment)
+    sent['date'] = sent['date'] + pd.Timedelta(days=1)
+    
+    # Rename daily_sentiment to daily_sentiment_decay
+    if 'daily_sentiment' in sent.columns:
+        sent['daily_sentiment_decay'] = sent['daily_sentiment']
+    
+    return sent
+
+
+def _add_sentiment_emas(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add EMA features for sentiment columns.
+    
+    Args:
+        df: DataFrame with sentiment columns
+    
+    Returns:
+        DataFrame with added EMA columns
+    """
+    ema_cols = ['daily_sentiment_decay', 'news_volume', 
+                'log_news_volume', 'decayed_news_volume']
+    
+    for col in ema_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+            for w in EMA_WINDOWS:
+                df[f'{col}_ema_{w}'] = df[col].ewm(span=w, adjust=False).mean()
+    
+    return df
+
+
+def _fill_missing_sentiment_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fill any missing sentiment columns with zeros.
+    
+    Args:
+        df: DataFrame possibly missing some sentiment columns
+    
+    Returns:
+        DataFrame with all sentiment columns present
+    """
+    for col in SENT_COLS:
+        if col in df.columns:
+            df[col] = df[col].fillna(0)
+    
+    return df
+
+
+def _add_zero_sentiment_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add zero-valued sentiment features when no sentiment data is available.
+    
+    Args:
+        df: DataFrame with price features
+    
+    Returns:
+        DataFrame with zero-valued sentiment columns
+    """
+    # Add base sentiment columns
+    df['daily_sentiment'] = 0.0
+    df['daily_sentiment_decay'] = 0.0
+    
+    for col in SENT_COLS:
+        df[col] = 0.0
+    
+    # Add zero sentiment EMAs
+    ema_cols = ['daily_sentiment_decay', 'news_volume', 
+                'log_news_volume', 'decayed_news_volume']
+    for col in ema_cols:
+        for w in EMA_WINDOWS:
+            df[f'{col}_ema_{w}'] = 0.0
+    
+    return df
+
+
+def _merge_and_process_sentiment(df: pd.DataFrame, sentiment_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge sentiment data with price features and compute sentiment EMAs.
+    
+    Args:
+        df: DataFrame with price features
+        sentiment_df: DataFrame with sentiment data
+    
+    Returns:
+        DataFrame with merged sentiment features
+    """
+    logger.info(f"Merging {len(sentiment_df)} sentiment records")
+    
+    df['date'] = pd.to_datetime(df['date'])
+    sent = _prepare_sentiment_for_merge(sentiment_df)
+    
+    # Merge
+    df = df.merge(sent, on='date', how='left')
+    
+    # Fill NaN sentiment with 0
+    if 'daily_sentiment_decay' in df.columns:
+        df['daily_sentiment_decay'] = df['daily_sentiment_decay'].fillna(0)
+    
+    # Compute EMAs for sentiment columns
+    df = _add_sentiment_emas(df)
+    
+    # Fill remaining sentiment columns with 0
+    df = _fill_missing_sentiment_columns(df)
+    
+    return df
+
+
 def engineer_all_features(prices: pd.DataFrame, 
                           sentiment_df: pd.DataFrame = None) -> pd.DataFrame:
     """
@@ -159,75 +280,19 @@ def engineer_all_features(prices: pd.DataFrame,
     """
     logger.info("Starting feature engineering...")
     
-    # Start with log returns
+    # Compute price-based features
     df = compute_log_returns(prices)
-    
-    # Add lagged returns
     df = compute_lagged_returns(df)
-    
-    # Add volatility
     df = compute_volatility(df)
-    
-    # Add RSI
     df['rsi_14'] = compute_rsi(df['log_return'], 14)
-    
-    # Add momentum
     df = compute_momentum(df)
     
     # Handle sentiment data
     if sentiment_df is not None and not sentiment_df.empty:
-        # Merge sentiment with price features
-        logger.info(f"Merging {len(sentiment_df)} sentiment records")
-        
-        df['date'] = pd.to_datetime(df['date'])
-        sent = sentiment_df.copy()
-        sent['date'] = pd.to_datetime(sent['date'])
-        
-        # Shift sentiment by 1 day (today's prediction uses yesterday's sentiment)
-        sent['date'] = sent['date'] + pd.Timedelta(days=1)
-        
-        # Rename daily_sentiment to daily_sentiment_decay
-        # (No decay applied here - sentiment is already processed by FinBERT model)
-        if 'daily_sentiment' in sent.columns:
-            sent['daily_sentiment_decay'] = sent['daily_sentiment']
-        
-        # Merge
-        df = df.merge(sent, on='date', how='left')
-        
-        # Fill NaN sentiment with 0
-        if 'daily_sentiment_decay' in df.columns:
-            df['daily_sentiment_decay'] = df['daily_sentiment_decay'].fillna(0)
-        
-        # Compute EMAs for sentiment columns
-        ema_cols = ['daily_sentiment_decay', 'news_volume', 
-                    'log_news_volume', 'decayed_news_volume']
-        for col in ema_cols:
-            if col in df.columns:
-                df[col] = df[col].fillna(0)
-                for w in EMA_WINDOWS:
-                    df[f'{col}_ema_{w}'] = df[col].ewm(span=w, adjust=False).mean()
-        
-        # Fill remaining sentiment columns with 0
-        for col in SENT_COLS:
-            if col in df.columns:
-                df[col] = df[col].fillna(0)
+        df = _merge_and_process_sentiment(df, sentiment_df)
     else:
-        # No sentiment data - add zero columns
         logger.info("No sentiment data provided, using zeros")
-        
-        # Add base sentiment column
-        df['daily_sentiment'] = 0.0
-        df['daily_sentiment_decay'] = 0.0
-        
-        for col in SENT_COLS:
-            df[col] = 0.0
-        
-        # Add zero sentiment EMAs
-        ema_cols = ['daily_sentiment_decay', 'news_volume', 
-                    'log_news_volume', 'decayed_news_volume']
-        for col in ema_cols:
-            for w in EMA_WINDOWS:
-                df[f'{col}_ema_{w}'] = 0.0
+        df = _add_zero_sentiment_features(df)
     
     logger.info(f"Feature engineering complete. Shape: {df.shape}")
     
