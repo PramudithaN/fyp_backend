@@ -10,6 +10,13 @@ pinned: false
 
 # Oil Price Prediction Backend
 
+[![Tests](https://github.com/PramudithaN/fyp_backend/actions/workflows/tests.yml/badge.svg)](https://github.com/PramudithaN/fyp_backend/actions/workflows/tests.yml)
+[![SonarCloud](https://github.com/PramudithaN/fyp_backend/actions/workflows/sonarcloud.yml/badge.svg)](https://github.com/PramudithaN/fyp_backend/actions/workflows/sonarcloud.yml)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=PramudithaN_fyp_backend&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=PramudithaN_fyp_backend)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=PramudithaN_fyp_backend&metric=coverage)](https://sonarcloud.io/summary/new_code?id=PramudithaN_fyp_backend)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=PramudithaN_fyp_backend&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=PramudithaN_fyp_backend)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=PramudithaN_fyp_backend&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=PramudithaN_fyp_backend)
+
 FastAPI backend for Brent oil price forecasting using a trained ensemble model.
 
 ## Features
@@ -152,3 +159,46 @@ pip install -r requirements-dev.txt
 ```
 
 See [tests/README.md](tests/README.md) for detailed testing documentation.
+
+## Code Quality & Analysis
+
+### SonarCloud
+
+This project uses SonarCloud for continuous code quality and security analysis.
+
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=PramudithaN_fyp_backend&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=PramudithaN_fyp_backend)
+
+**Key Metrics:**
+- **Coverage:** Tracks test coverage across the codebase
+- **Security:** Identifies security vulnerabilities and hotspots
+- **Maintainability:** Measures code smells and technical debt
+- **Reliability:** Detects bugs and code issues
+- **Duplications:** Identifies duplicate code blocks
+
+**View Full Report:**  
+[https://sonarcloud.io/dashboard?id=PramudithaN_fyp_backend](https://sonarcloud.io/dashboard?id=PramudithaN_fyp_backend)
+
+### Local Analysis
+
+Run SonarScanner locally (requires SonarCloud token):
+
+```bash
+# Install SonarScanner (one-time setup)
+# macOS: brew install sonar-scanner
+# Windows: Download from https://docs.sonarcloud.io/advanced-setup/ci-based-analysis/sonarscanner-cli/
+
+# Run analysis
+sonar-scanner \
+  -Dsonar.organization=pramudithan \
+  -Dsonar.projectKey=PramudithaN_fyp_backend \
+  -Dsonar.sources=app \
+  -Dsonar.host.url=https://sonarcloud.io \
+  -Dsonar.login=YOUR_SONAR_TOKEN
+```
+
+### Setting Up SonarCloud (For Maintainers)
+
+1. Go to [SonarCloud](https://sonarcloud.io)
+2. Import the GitHub repository
+3. Add `SONAR_TOKEN` secret to GitHub repository settings
+4. The workflow will automatically run on push and pull requests

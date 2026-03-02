@@ -57,6 +57,14 @@ jobs:
       if: matrix.python-version == '3.10'
       run: |
         coverage-badge -o coverage.svg -f
+    
+    - name: SonarCloud Scan
+      if: matrix.python-version == '3.10'
+      uses: SonarSource/sonarcloud-github-action@master
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      continue-on-error: true
 
   security:
     runs-on: ubuntu-latest
