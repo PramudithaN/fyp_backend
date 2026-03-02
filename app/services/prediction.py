@@ -43,135 +43,52 @@ class PredictionService:
         self,
         prices: pd.DataFrame = None,
         sentiment_df: pd.DataFrame = None,
-        days_of_history: int = 30,
     ) -> List[Dict[str, Any]]:
         """
         End-to-end prediction: Fetch history -> Engineer features -> Forecast.
-        
-        Note: This function has higher complexity due to multi-model coordination,
-        data validation, feature engineering, and ensemble prediction logic.
 
         Args:
             prices: Optional historical prices (if None, fetches from Yahoo Finance)
             sentiment_df: Optional sentiment history (if None, fetches from database)
-            days_of_history: Minimum trading days required for features (if auto-fetching)
 
         Returns:
             List of 14-day forecast dictionaries
         """
         logger.info("Starting prediction pipeline...")
 
-        # 1. Handle Price Data
-        if prices is None:
-            logger.info(f"Auto-fetching {days_of_history} days of price history...")
-            from app.services.price_fetcher import fetch_latest_prices
+        # 1. Handle Data
+        prices = self._handle_price_data(prices)
+        sentiment_df = self._handle_sentiment_data(sentiment_df, prices)
 
-            # Fetch extra days to account for NaN rows created by rolling windows
-            # Need lookback (30) + max_window (14) + buffer (20) = 64 days minimum
-            # Fetching 120 days ensures we have enough after dropna()
-            prices = fetch_latest_prices(lookback_days=120)
-        else:
-            logger.info(f"Using provided price data ({len(prices)} points)")
-            # Ensure required columns
-            if "date" not in prices.columns or "price" not in prices.columns:
-                raise ValueError("Price DataFrame must have 'date' and 'price' columns")
-            prices["date"] = pd.to_datetime(prices["date"]).dt.tz_localize(None)
-            prices = prices.sort_values("date").reset_index(drop=True)
-
-        # 2. Handle Sentiment Data - ENABLED for news-driven momentum capture
-        if sentiment_df is None:
-            logger.info("Fetching sentiment data from database...")
-            try:
-                # Get the end date from prices for proper alignment
-                price_end_date = pd.to_datetime(prices["date"].iloc[-1])
-
-                # Get sentiment history aligned with price data
-                sentiment_df = sentiment_service.get_sentiment_window(
-                    days=120, end_date=price_end_date
-                )
-
-                if sentiment_df is not None and not sentiment_df.empty:
-                    logger.info(
-                        f"Loaded {len(sentiment_df)} days of sentiment data (up to {price_end_date.date()})"
-                    )
-                    # Apply cross-day decay
-                    sentiment_df = sentiment_service.apply_cross_day_decay(sentiment_df)
-                else:
-                    logger.warning(
-                        "No sentiment data for this date range - using price-only mode"
-                    )
-                    sentiment_df = None
-            except Exception as e:
-                logger.warning(f"Failed to load sentiment: {e}. Using price-only mode.")
-                sentiment_df = None
-        else:
-            logger.info(f"Using provided sentiment data ({len(sentiment_df)} days)")
-
-        # 3. Feature Engineering
+        # 2. Feature Engineering
         logger.info("Step 1: Feature engineering")
-        df = engineer_all_features(prices, sentiment_df=sentiment_df)
+        df = self._prepare_features(prices, sentiment_df)
 
-        # Drop initial NaN rows used for rolling features
-        # We need at least 'lookback' valid rows for the GRUs
-        df = df.dropna().tail(self.artifacts.lookback)
-
-        if len(df) < self.artifacts.lookback:
-            raise ValueError(
-                f"Insufficient valid data points after feature engineering. Got {len(df)}, need {self.artifacts.lookback}."
-            )
-
-        # 4. Compute sentiment signals for trend reversal detection
+        # 3. Compute sentiment signals for trend reversal detection
         sentiment_signals = self._compute_sentiment_signals(sentiment_df, prices)
 
-        # 5. Generate forecasts (ARIMA, Mid-GRU, Sent-GRU, XGBoost)
+        # 4. Generate forecasts (ARIMA, Mid-GRU, Sent-GRU, XGBoost)
         logger.info("Step 2: Generating component forecasts")
-        trend_fc = self._arima_forecast(df, self.artifacts.horizon)
-        mid_fc = self._mid_gru_forecast(df, self.artifacts.lookback)
-        sent_fc = self._sent_gru_forecast(df, self.artifacts.lookback)
-        hf_fc = self._xgb_hf_forecast(df, self.artifacts.horizon)
+        component_forecasts = self._generate_component_forecasts(df)
 
-        # 6. Meta-ensemble and Format
+        # 5. Meta-ensemble and Format
         logger.info("Step 3: Meta-ensemble combination")
         ensemble_returns = self._meta_ensemble(
-            trend_fc, mid_fc, sent_fc, hf_fc, self.artifacts.horizon
+            *component_forecasts, self.artifacts.horizon
         )
 
-        # 7. Apply sentiment-based adjustments for trend reversal detection
+        # 6. Apply sentiment-based adjustments for trend reversal detection
         ensemble_returns = self._apply_sentiment_adjustment(
             ensemble_returns, sentiment_signals
         )
 
+        # 7. Convert returns to prices
         logger.info("Step 4: Converting returns to prices")
-        last_price = float(prices["price"].iloc[-1])
-        last_date = pd.to_datetime(prices["date"].iloc[-1])
-
-        # Calculate recent momentum (7-day cumulative return)
-        recent_prices = prices["price"].tail(8).values  # Need 8 to compute 7-day return
-        if len(recent_prices) >= 8:
-            recent_momentum = np.log(recent_prices[-1] / recent_prices[0])
-            logger.info(
-                f"Recent 7-day momentum: {recent_momentum:.4f} ({recent_momentum*100:.2f}%)"
-            )
-        else:
-            recent_momentum = 0.0
-
-        # Calculate recent volatility (7-day std of daily returns)
-        if len(prices) >= 8:
-            recent_returns = np.diff(np.log(prices["price"].tail(8).values))
-            recent_volatility = np.std(recent_returns)
-            recent_vol_pct = recent_volatility * 100
-            logger.info(
-                "Recent 7-day volatility: %.4f (%.2f%% daily)",
-                recent_volatility,
-                recent_vol_pct,
-            )
-        else:
-            recent_volatility = 0.015  # Default 1.5%
-
+        recent_volatility = self._calculate_recent_volatility(prices)
         forecasts = self._returns_to_prices(
             ensemble_returns,
-            last_price,
-            last_date,
+            float(prices["price"].iloc[-1]),
+            pd.to_datetime(prices["date"].iloc[-1]),
             self.artifacts.horizon,
             recent_volatility,
         )
@@ -179,27 +96,129 @@ class PredictionService:
         logger.info("Prediction pipeline complete!")
         return forecasts
 
+    def _handle_price_data(self, prices: pd.DataFrame = None) -> pd.DataFrame:
+        """Handle price data loading and validation."""
+        if prices is None:
+            logger.info("Auto-fetching 120 days of price history...")
+            from app.services.price_fetcher import fetch_latest_prices
+            return fetch_latest_prices(lookback_days=120)
+        
+        logger.info(f"Using provided price data ({len(prices)} points)")
+        if "date" not in prices.columns or "price" not in prices.columns:
+            raise ValueError("Price DataFrame must have 'date' and 'price' columns")
+        
+        prices["date"] = pd.to_datetime(prices["date"]).dt.tz_localize(None)
+        return prices.sort_values("date").reset_index(drop=True)
+
+    def _handle_sentiment_data(
+        self, sentiment_df: pd.DataFrame = None, prices: pd.DataFrame = None
+    ) -> Optional[pd.DataFrame]:
+        """Handle sentiment data loading with fallback to price-only mode."""
+        if sentiment_df is not None:
+            logger.info(f"Using provided sentiment data ({len(sentiment_df)} days)")
+            return sentiment_df
+
+        logger.info("Fetching sentiment data from database...")
+        try:
+            price_end_date = pd.to_datetime(prices["date"].iloc[-1])
+            sentiment_df = sentiment_service.get_sentiment_window(
+                days=120, end_date=price_end_date
+            )
+
+            if sentiment_df is not None and not sentiment_df.empty:
+                logger.info(
+                    f"Loaded {len(sentiment_df)} days of sentiment data (up to {price_end_date.date()})"
+                )
+                return sentiment_service.apply_cross_day_decay(sentiment_df)
+            
+            logger.warning("No sentiment data for this date range - using price-only mode")
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to load sentiment: {e}. Using price-only mode.")
+            return None
+
+    def _prepare_features(
+        self, prices: pd.DataFrame, sentiment_df: pd.DataFrame = None
+    ) -> pd.DataFrame:
+        """Engineer features and validate data quality."""
+        df = engineer_all_features(prices, sentiment_df=sentiment_df)
+        df = df.dropna().tail(self.artifacts.lookback)
+
+        if len(df) < self.artifacts.lookback:
+            raise ValueError(
+                f"Insufficient valid data points after feature engineering. "
+                f"Got {len(df)}, need {self.artifacts.lookback}."
+            )
+        return df
+
+    def _generate_component_forecasts(self, df: pd.DataFrame) -> tuple:
+        """Generate all component forecasts and return as tuple."""
+        trend_fc = self._arima_forecast(df, self.artifacts.horizon)
+        mid_fc = self._mid_gru_forecast(df, self.artifacts.lookback)
+        sent_fc = self._sent_gru_forecast(df, self.artifacts.lookback)
+        hf_fc = self._xgb_hf_forecast(df, self.artifacts.horizon)
+        return trend_fc, mid_fc, sent_fc, hf_fc
+
+    def _calculate_recent_volatility(self, prices: pd.DataFrame) -> float:
+        """Calculate recent 7-day volatility from price data."""
+        if len(prices) < 8:
+            return 0.015  # Default 1.5%
+
+        recent_prices = prices["price"].tail(8).values
+        recent_momentum = np.log(recent_prices[-1] / recent_prices[0])
+        logger.info(
+            f"Recent 7-day momentum: {recent_momentum:.4f} ({recent_momentum*100:.2f}%)"
+        )
+
+        recent_returns = np.diff(np.log(recent_prices))
+        recent_volatility = np.std(recent_returns)
+        recent_vol_pct = recent_volatility * 100
+        logger.info(
+            "Recent 7-day volatility: %.4f (%.2f%% daily)",
+            recent_volatility,
+            recent_vol_pct,
+        )
+        return recent_volatility
+
     def _compute_sentiment_signals(
         self, sentiment_df: pd.DataFrame, prices: pd.DataFrame
     ) -> dict:
         """
         Compute sentiment-based signals for trend reversal detection.
-        
-        Note: This function has higher complexity due to multi-factor signal computation,
-        divergence detection, momentum analysis, and adaptive adjustment logic.
-
-        IMPROVED VERSION with:
-        1. Sentiment momentum (rate of change)
-        2. Sentiment-price divergence with weighting
-        3. Extreme sentiment (contrarian indicator)
-        4. Momentum persistence (consistency bonus)
-        5. Trend strength indicator (price drop + sentiment rise)
-        6. Adaptive adjustment based on signal strength
 
         Returns:
             Dictionary with sentiment signals
         """
-        signals = {
+        signals = self._init_sentiment_signals()
+
+        if sentiment_df is None or sentiment_df.empty:
+            return signals
+
+        try:
+            sent_col = self._get_sentiment_column(sentiment_df)
+            if sent_col is None:
+                return signals
+
+            sentiment_df = self._prepare_sentiment_data(sentiment_df)
+            prices = self._prepare_price_data(prices)
+
+            # Calculate individual signal components
+            self._calculate_sentiment_momentum(sentiment_df, sent_col, signals)
+            self._calculate_price_momentum(prices, signals)
+            self._calculate_divergence(signals)
+            self._detect_extreme_sentiment(sentiment_df, sent_col, signals)
+
+            # Compute reversal probability and adjustment
+            self._calculate_reversal_probability(signals)
+
+        except Exception as e:
+            logger.warning(f"Failed to compute sentiment signals: {e}")
+
+        return signals
+
+    def _init_sentiment_signals(self) -> dict:
+        """Initialize sentiment signals dictionary."""
+        return {
             "sentiment_momentum": 0.0,
             "divergence": 0.0,
             "extreme_sentiment": 0.0,
@@ -210,286 +229,288 @@ class PredictionService:
             "price_drop_7d": 0.0,
         }
 
-        if sentiment_df is None or sentiment_df.empty:
-            return signals
+    def _get_sentiment_column(self, sentiment_df: pd.DataFrame) -> Optional[str]:
+        """Get the appropriate sentiment column name."""
+        if "daily_sentiment" in sentiment_df.columns:
+            return "daily_sentiment"
+        if "daily_sentiment_decay" in sentiment_df.columns:
+            return "daily_sentiment_decay"
+        return None
 
-        try:
-            # Get sentiment column name
-            sent_col = (
-                "daily_sentiment"
-                if "daily_sentiment" in sentiment_df.columns
-                else "daily_sentiment_decay"
-            )
-            if sent_col not in sentiment_df.columns:
-                return signals
+    def _prepare_sentiment_data(self, sentiment_df: pd.DataFrame) -> pd.DataFrame:
+        """Prepare sentiment data for analysis."""
+        sentiment_df = sentiment_df.copy()
+        sentiment_df["date"] = pd.to_datetime(sentiment_df["date"])
+        return sentiment_df.sort_values("date")
 
-            sentiment_df = sentiment_df.copy()
-            sentiment_df["date"] = pd.to_datetime(sentiment_df["date"])
-            sentiment_df = sentiment_df.sort_values("date")
+    def _prepare_price_data(self, prices: pd.DataFrame) -> pd.DataFrame:
+        """Prepare price data for analysis."""
+        prices = prices.copy()
+        prices["date"] = pd.to_datetime(prices["date"])
+        return prices
 
-            # 1. Sentiment Momentum (7-day change in sentiment)
-            if len(sentiment_df) >= 7:
-                recent_sentiment = sentiment_df[sent_col].tail(7).values
-                if len(recent_sentiment) >= 2:
-                    sentiment_momentum = recent_sentiment[-1] - recent_sentiment[0]
-                    signals["sentiment_momentum"] = sentiment_momentum
-                    logger.info(f"Sentiment momentum (7d): {sentiment_momentum:.4f}")
+    def _calculate_sentiment_momentum(
+        self, sentiment_df: pd.DataFrame, sent_col: str, signals: dict
+    ) -> None:
+        """Calculate sentiment momentum and persistence."""
+        if len(sentiment_df) < 7:
+            return
 
-                    # NEW: Momentum Persistence - check if sentiment consistently improving
-                    daily_changes = np.diff(recent_sentiment)
-                    positive_days = np.sum(daily_changes > 0)
-                    negative_days = np.sum(daily_changes < 0)
+        recent_sentiment = sentiment_df[sent_col].tail(7).values
+        if len(recent_sentiment) < 2:
+            return
 
-                    if positive_days >= 5:  # 5+ of 6 days positive
-                        signals["momentum_persistence"] = 1.0
-                        logger.info(
-                            f"STRONG momentum persistence: {positive_days}/6 days positive"
-                        )
-                    elif positive_days >= 4:
-                        signals["momentum_persistence"] = 0.5
-                    elif negative_days >= 5:
-                        signals["momentum_persistence"] = -1.0
-                        logger.info(
-                            f"STRONG negative persistence: {negative_days}/6 days negative"
-                        )
-                    elif negative_days >= 4:
-                        signals["momentum_persistence"] = -0.5
+        sentiment_momentum = recent_sentiment[-1] - recent_sentiment[0]
+        signals["sentiment_momentum"] = sentiment_momentum
+        logger.info(f"Sentiment momentum (7d): {sentiment_momentum:.4f}")
 
-            # 2. Price momentum for divergence detection
-            prices = prices.copy()
-            prices["date"] = pd.to_datetime(prices["date"])
-            price_momentum = 0.0
-            if len(prices) >= 7:
-                price_momentum = np.log(
-                    prices["price"].iloc[-1] / prices["price"].iloc[-7]
-                )
-                signals["price_drop_7d"] = price_momentum
+        # Momentum persistence
+        daily_changes = np.diff(recent_sentiment)
+        positive_days = np.sum(daily_changes > 0)
+        negative_days = np.sum(daily_changes < 0)
 
-                # NEW: Trend Strength - significant price drop
-                if price_momentum < -0.05:  # >5% drop in 7 days
-                    signals["trend_strength"] = -2.0  # Strong downtrend
-                    momentum_pct = price_momentum * 100
-                    logger.info(
-                        "STRONG DOWNTREND detected: %.1f%% in 7 days", momentum_pct
-                    )
-                elif price_momentum < -0.03:  # >3% drop
-                    signals["trend_strength"] = -1.0
-                elif price_momentum > 0.05:  # >5% rise
-                    signals["trend_strength"] = 2.0
-                elif price_momentum > 0.03:
-                    signals["trend_strength"] = 1.0
+        signals["momentum_persistence"] = self._determine_persistence(
+            positive_days, negative_days
+        )
 
-            # 3. Sentiment-Price Divergence (IMPROVED with weighting)
-            if signals["sentiment_momentum"] != 0 and price_momentum != 0:
-                # Normalize both to similar scale
-                norm_sent = np.sign(signals["sentiment_momentum"]) * min(
-                    abs(signals["sentiment_momentum"]), 1.0
-                )
-                norm_price = (
-                    np.sign(price_momentum) * min(abs(price_momentum), 0.1) * 10
-                )  # Scale to ~1
+    def _determine_persistence(self, positive_days: int, negative_days: int) -> float:
+        """Determine momentum persistence score."""
+        if positive_days >= 5:
+            logger.info(f"STRONG momentum persistence: {positive_days}/6 days positive")
+            return 1.0
+        if positive_days >= 4:
+            return 0.5
+        if negative_days >= 5:
+            logger.info(f"STRONG negative persistence: {negative_days}/6 days negative")
+            return -1.0
+        if negative_days >= 4:
+            return -0.5
+        return 0.0
 
-                # Divergence is positive when sentiment up but price down (or vice versa)
-                divergence = norm_sent - norm_price
+    def _calculate_price_momentum(self, prices: pd.DataFrame, signals: dict) -> None:
+        """Calculate price momentum and trend strength."""
+        if len(prices) < 7:
+            return
 
-                # NEW: Weight divergence higher when price move is large
-                if abs(price_momentum) > 0.03:
-                    divergence *= (
-                        1.5  # Amplify divergence when price moved significantly
-                    )
+        price_momentum = np.log(prices["price"].iloc[-1] / prices["price"].iloc[-7])
+        signals["price_drop_7d"] = price_momentum
+        signals["trend_strength"] = self._determine_trend_strength(price_momentum)
 
-                signals["divergence"] = divergence
-                logger.info(
-                    f"Sentiment-Price divergence: {divergence:.4f} (sent={norm_sent:.2f}, price={norm_price:.2f})"
-                )
+    def _determine_trend_strength(self, price_momentum: float) -> float:
+        """Determine trend strength from price momentum."""
+        if price_momentum < -0.05:
+            logger.info("STRONG DOWNTREND detected: %.1f%% in 7 days", price_momentum * 100)
+            return -2.0
+        if price_momentum < -0.03:
+            return -1.0
+        if price_momentum > 0.05:
+            return 2.0
+        if price_momentum > 0.03:
+            return 1.0
+        return 0.0
 
-            # 4. Extreme Sentiment Detection (contrarian signal)
-            current_sentiment = (
-                sentiment_df[sent_col].iloc[-1] if len(sentiment_df) > 0 else 0
-            )
+    def _calculate_divergence(self, signals: dict) -> None:
+        """Calculate sentiment-price divergence."""
+        if signals["sentiment_momentum"] == 0 or signals["price_drop_7d"] == 0:
+            return
 
-            # Calculate sentiment z-score (how extreme is current sentiment)
-            if len(sentiment_df) >= 30:
-                sent_mean = sentiment_df[sent_col].tail(30).mean()
-                sent_std = sentiment_df[sent_col].tail(30).std()
-                if sent_std > 0:
-                    z_score = (current_sentiment - sent_mean) / sent_std
-                    signals["extreme_sentiment"] = z_score
+        norm_sent = np.sign(signals["sentiment_momentum"]) * min(
+            abs(signals["sentiment_momentum"]), 1.0
+        )
+        norm_price = np.sign(signals["price_drop_7d"]) * min(abs(signals["price_drop_7d"]), 0.1) * 10
 
-                    if z_score < -1.5:
-                        logger.info(
-                            f"CONTRARIAN SIGNAL: Extreme negative sentiment (z={z_score:.2f})"
-                        )
-                    elif z_score > 1.5:
-                        logger.info(
-                            f"CONTRARIAN SIGNAL: Extreme positive sentiment (z={z_score:.2f})"
-                        )
+        divergence = norm_sent - norm_price
 
-            # 5. Compute Reversal Probability and Adjustment Factor (IMPROVED)
-            bullish_reversal_score = 0.0
-            bearish_reversal_score = 0.0
+        # Amplify divergence when price moved significantly
+        if abs(signals["price_drop_7d"]) > 0.03:
+            divergence *= 1.5
 
-            # --- BULLISH SIGNALS ---
-            # A. Sentiment improving rapidly
-            if signals["sentiment_momentum"] > 0.15:
-                bullish_reversal_score += 0.4  # Increased from 0.3
-            elif signals["sentiment_momentum"] > 0.1:
-                bullish_reversal_score += 0.3
-            elif signals["sentiment_momentum"] > 0.05:
-                bullish_reversal_score += 0.15
+        signals["divergence"] = divergence
+        logger.info(
+            f"Sentiment-Price divergence: {divergence:.4f} (sent={norm_sent:.2f}, price={norm_price:.2f})"
+        )
 
-            # B. Positive divergence (sentiment up, price down)
-            if signals["divergence"] > 1.0:
-                bullish_reversal_score += 0.4  # Strong divergence
-            elif signals["divergence"] > 0.5:
-                bullish_reversal_score += 0.3
-            elif signals["divergence"] > 0.2:
-                bullish_reversal_score += 0.15
+    def _detect_extreme_sentiment(
+        self, sentiment_df: pd.DataFrame, sent_col: str, signals: dict
+    ) -> None:
+        """Detect extreme sentiment using z-score."""
+        if len(sentiment_df) < 30:
+            return
 
-            # C. Extreme negative sentiment (contrarian)
-            if signals["extreme_sentiment"] < -2.0:
-                bullish_reversal_score += 0.3  # Very extreme
-            elif signals["extreme_sentiment"] < -1.5:
-                bullish_reversal_score += 0.2
-            elif signals["extreme_sentiment"] < -1.0:
-                bullish_reversal_score += 0.1
+        current_sentiment = sentiment_df[sent_col].iloc[-1]
+        sent_mean = sentiment_df[sent_col].tail(30).mean()
+        sent_std = sentiment_df[sent_col].tail(30).std()
 
-            # D. NEW: Momentum persistence bonus
-            if signals["momentum_persistence"] > 0:
-                bullish_reversal_score += 0.15 * signals["momentum_persistence"]
+        if sent_std <= 0:
+            return
 
-            # E. NEW: Strong downtrend + improving sentiment = reversal
-            # BUT require stronger sentiment improvement to confirm
-            if (
-                signals["trend_strength"] < -1 and signals["sentiment_momentum"] > 0.10
-            ):  # Increased threshold
-                bullish_reversal_score += 0.25
-                logger.info("REVERSAL PATTERN: Strong downtrend + improving sentiment")
+        z_score = (current_sentiment - sent_mean) / sent_std
+        signals["extreme_sentiment"] = z_score
 
-            # --- BEARISH SIGNALS ---
-            if signals["sentiment_momentum"] < -0.15:
-                bearish_reversal_score += 0.4
-            elif signals["sentiment_momentum"] < -0.1:
-                bearish_reversal_score += 0.3
-            elif signals["sentiment_momentum"] < -0.05:
-                bearish_reversal_score += 0.15
+        if z_score < -1.5:
+            logger.info(f"CONTRARIAN SIGNAL: Extreme negative sentiment (z={z_score:.2f})")
+        elif z_score > 1.5:
+            logger.info(f"CONTRARIAN SIGNAL: Extreme positive sentiment (z={z_score:.2f})")
 
-            if signals["divergence"] < -1.0:
-                bearish_reversal_score += 0.4
-            elif signals["divergence"] < -0.5:
-                bearish_reversal_score += 0.3
-            elif signals["divergence"] < -0.2:
-                bearish_reversal_score += 0.15
+    def _calculate_reversal_probability(self, signals: dict) -> None:
+        """Calculate reversal probability and adjustment factor."""
+        bullish_score = self._calculate_bullish_signals(signals)
+        bearish_score = self._calculate_bearish_signals(signals)
 
-            if signals["extreme_sentiment"] > 2.0:
-                bearish_reversal_score += 0.3
-            elif signals["extreme_sentiment"] > 1.5:
-                bearish_reversal_score += 0.2
-            elif signals["extreme_sentiment"] > 1.0:
-                bearish_reversal_score += 0.1
+        signals["reversal_probability"] = bullish_score - bearish_score
 
-            if signals["momentum_persistence"] < 0:
-                bearish_reversal_score += 0.15 * abs(signals["momentum_persistence"])
+        # Determine adjustment based on signal confidence
+        confirming_signals = self._count_confirming_signals(signals)
+        adj_per_unit = self._determine_adjustment_rate(confirming_signals, signals["reversal_probability"])
 
-            if signals["trend_strength"] > 1 and signals["sentiment_momentum"] < -0.05:
-                bearish_reversal_score += 0.25
-                logger.info("REVERSAL PATTERN: Strong uptrend + declining sentiment")
+        signals["adjustment_factor"] = np.clip(
+            signals["reversal_probability"] * adj_per_unit, -0.010, 0.010
+        )
 
-            # Net reversal signal (-1 to +1, positive = bullish reversal expected)
-            signals["reversal_probability"] = (
-                bullish_reversal_score - bearish_reversal_score
-            )
+        logger.info(
+            f"Reversal signals: bull={bullish_score:.2f}, bear={bearish_score:.2f}, "
+            f"prob={signals['reversal_probability']:.2f}, adj={signals['adjustment_factor']*100:.3f}%"
+        )
 
-            # CONFIDENCE-BASED ADJUSTMENT: Only adjust when multiple signals confirm
-            # Count how many indicators are triggering
-            confirming_signals = 0
-            if abs(signals["sentiment_momentum"]) > 0.08:
-                confirming_signals += 1
-            if abs(signals["divergence"]) > 0.4:
-                confirming_signals += 1
-            if abs(signals["extreme_sentiment"]) > 1.2:
-                confirming_signals += 1
-            if abs(signals["momentum_persistence"]) > 0.4:
-                confirming_signals += 1
-            if abs(signals["trend_strength"]) > 0.5:
-                confirming_signals += 1
+    def _calculate_bullish_signals(self, signals: dict) -> float:
+        """Calculate bullish reversal score."""
+        score = 0.0
 
-            prob = signals["reversal_probability"]
+        # Sentiment improving rapidly
+        if signals["sentiment_momentum"] > 0.15:
+            score += 0.4
+        elif signals["sentiment_momentum"] > 0.1:
+            score += 0.3
+        elif signals["sentiment_momentum"] > 0.05:
+            score += 0.15
 
-            # REQUIRE MULTIPLE CONFIRMATIONS for adjustment
-            if confirming_signals >= 3 and abs(prob) > 0.5:
-                # High confidence: 3+ signals confirming
-                adj_per_unit = 0.006  # 0.6% per unit
-                logger.info(f"HIGH CONFIDENCE: {confirming_signals} signals confirming")
-            elif confirming_signals >= 2 and abs(prob) > 0.4:
-                # Medium confidence: 2 signals confirming
-                adj_per_unit = 0.004  # 0.4% per unit
-                logger.info(
-                    f"MEDIUM CONFIDENCE: {confirming_signals} signals confirming"
-                )
-            else:
-                # Low confidence: don't adjust
-                adj_per_unit = 0.0
-                if abs(prob) > 0.2:
-                    logger.info(
-                        f"LOW CONFIDENCE: Only {confirming_signals} signals, skipping adjustment"
-                    )
+        # Positive divergence
+        if signals["divergence"] > 1.0:
+            score += 0.4
+        elif signals["divergence"] > 0.5:
+            score += 0.3
+        elif signals["divergence"] > 0.2:
+            score += 0.15
 
-            # Cap at ±1.0% daily adjustment
-            signals["adjustment_factor"] = np.clip(prob * adj_per_unit, -0.010, 0.010)
+        # Extreme negative sentiment (contrarian)
+        if signals["extreme_sentiment"] < -2.0:
+            score += 0.3
+        elif signals["extreme_sentiment"] < -1.5:
+            score += 0.2
+        elif signals["extreme_sentiment"] < -1.0:
+            score += 0.1
 
-            logger.info(
-                f"Reversal signals: bull={bullish_reversal_score:.2f}, bear={bearish_reversal_score:.2f}, "
-                f"prob={prob:.2f}, adj={signals['adjustment_factor']*100:.3f}%"
-            )
+        # Momentum persistence bonus
+        if signals["momentum_persistence"] > 0:
+            score += 0.15 * signals["momentum_persistence"]
 
-        except Exception as e:
-            logger.warning(f"Failed to compute sentiment signals: {e}")
+        # Reversal pattern: downtrend + improving sentiment
+        if signals["trend_strength"] < -1 and signals["sentiment_momentum"] > 0.10:
+            score += 0.25
+            logger.info("REVERSAL PATTERN: Strong downtrend + improving sentiment")
 
-        return signals
+        return score
+
+    def _calculate_bearish_signals(self, signals: dict) -> float:
+        """Calculate bearish reversal score."""
+        score = 0.0
+
+        # Sentiment declining rapidly
+        if signals["sentiment_momentum"] < -0.15:
+            score += 0.4
+        elif signals["sentiment_momentum"] < -0.1:
+            score += 0.3
+        elif signals["sentiment_momentum"] < -0.05:
+            score += 0.15
+
+        # Negative divergence
+        if signals["divergence"] < -1.0:
+            score += 0.4
+        elif signals["divergence"] < -0.5:
+            score += 0.3
+        elif signals["divergence"] < -0.2:
+            score += 0.15
+
+        # Extreme positive sentiment (contrarian)
+        if signals["extreme_sentiment"] > 2.0:
+            score += 0.3
+        elif signals["extreme_sentiment"] > 1.5:
+            score += 0.2
+        elif signals["extreme_sentiment"] > 1.0:
+            score += 0.1
+
+        # Negative momentum persistence
+        if signals["momentum_persistence"] < 0:
+            score += 0.15 * abs(signals["momentum_persistence"])
+
+        # Reversal pattern: uptrend + declining sentiment
+        if signals["trend_strength"] > 1 and signals["sentiment_momentum"] < -0.05:
+            score += 0.25
+            logger.info("REVERSAL PATTERN: Strong uptrend + declining sentiment")
+
+        return score
+
+    def _count_confirming_signals(self, signals: dict) -> int:
+        """Count how many indicators are triggering."""
+        count = 0
+        if abs(signals["sentiment_momentum"]) > 0.08:
+            count += 1
+        if abs(signals["divergence"]) > 0.4:
+            count += 1
+        if abs(signals["extreme_sentiment"]) > 1.2:
+            count += 1
+        if abs(signals["momentum_persistence"]) > 0.4:
+            count += 1
+        if abs(signals["trend_strength"]) > 0.5:
+            count += 1
+        return count
+
+    def _determine_adjustment_rate(self, confirming_signals: int, prob: float) -> float:
+        """Determine adjustment rate based on signal confidence."""
+        if confirming_signals >= 3 and abs(prob) > 0.5:
+            logger.info(f"HIGH CONFIDENCE: {confirming_signals} signals confirming")
+            return 0.006
+        if confirming_signals >= 2 and abs(prob) > 0.4:
+            logger.info(f"MEDIUM CONFIDENCE: {confirming_signals} signals confirming")
+            return 0.004
+        if abs(prob) > 0.2:
+            logger.info(f"LOW CONFIDENCE: Only {confirming_signals} signals, skipping adjustment")
+        return 0.0
 
     def _apply_sentiment_adjustment(
         self, returns: np.ndarray, signals: dict
     ) -> np.ndarray:
         """
-        Apply sentiment-based adjustment to predicted returns.
-
-        IMPROVED VERSION:
-        - Stronger adjustments for high-confidence signals
-        - Slower decay for persistent signals
-        - Additional boost when multiple signals align
+        Apply sentiment-based adjustment to predicted returns with decay.
         """
         adjustment = signals.get("adjustment_factor", 0.0)
 
         if abs(adjustment) < 0.0001:
             return returns
 
-        # Apply decaying adjustment over horizon
-        # IMPROVED: Slower decay for persistent/strong signals
         adjusted_returns = returns.copy()
-
-        # Determine decay rate based on signal strength
-        prob = abs(signals.get("reversal_probability", 0))
-        persistence = abs(signals.get("momentum_persistence", 0))
-
-        if prob > 0.6 and persistence > 0.5:
-            decay_rate = 0.05  # Very slow decay for high-confidence persistent signals
-        elif prob > 0.4:
-            decay_rate = 0.08  # Slower decay for strong signals
-        else:
-            decay_rate = 0.12  # Normal decay
+        decay_rate = self._determine_decay_rate(signals)
 
         for i in range(len(adjusted_returns)):
-            decay = np.exp(-decay_rate * i)  # Decay factor
+            decay = np.exp(-decay_rate * i)
             adjusted_returns[i] += adjustment * decay
 
-        total_adj = sum(
-            adjustment * np.exp(-decay_rate * i) for i in range(len(adjusted_returns))
-        )
+        total_adj = sum(adjustment * np.exp(-decay_rate * i) for i in range(len(adjusted_returns)))
         logger.info(
             f"Applied sentiment adjustment: {adjustment*100:.3f}%/day (decay={decay_rate}, total={total_adj*100:.2f}%)"
         )
         return adjusted_returns
+
+    def _determine_decay_rate(self, signals: dict) -> float:
+        """Determine decay rate based on signal strength and persistence."""
+        prob = abs(signals.get("reversal_probability", 0))
+        persistence = abs(signals.get("momentum_persistence", 0))
+
+        if prob > 0.6 and persistence > 0.5:
+            return 0.05  # Very slow decay for high-confidence persistent signals
+        if prob > 0.4:
+            return 0.08  # Slower decay for strong signals
+        return 0.12  # Normal decay
 
     def _arima_forecast(self, df: pd.DataFrame, horizon: int) -> np.ndarray:
         """
@@ -649,7 +670,7 @@ class PredictionService:
         recent_volatility: float = 0.0,
     ) -> List[Dict[str, Any]]:
         """
-        Convert log returns to price forecast (with volatility-adjusted scaling).
+        Convert log returns to price forecast with volatility-adjusted scaling.
 
         Args:
             returns: Predicted log returns from ensemble
@@ -658,65 +679,64 @@ class PredictionService:
             horizon: Forecast horizon
             recent_volatility: Recent volatility (7-day std of returns)
         """
+        vol_multiplier = self._calculate_volatility_multiplier(recent_volatility)
+        logger.info(f"Volatility multiplier: {vol_multiplier:.2f}x")
+
         forecasts = []
         current_price = last_price
         current_date = last_date
 
-        # Volatility scaling: REDUCED impact to prevent extreme predictions
-        # The base model already has issues with scaler_mid, so we minimize amplification
-        # Typical daily volatility for oil is ~1.5-2%
-        BASELINE_VOL = 0.018  # Increased baseline to reduce multiplier
-        vol_multiplier = (
-            max(1.0, recent_volatility / BASELINE_VOL) if recent_volatility > 0 else 1.0
-        )
-        vol_multiplier = min(vol_multiplier, 1.3)  # Reduced cap from 2.0 to 1.3
-
-        logger.info(f"Volatility multiplier: {vol_multiplier:.2f}x")
-
         for i in range(horizon):
-            # Calculate next date (skipping weekends simple version)
-            current_date += pd.Timedelta(days=1)
-            while current_date.weekday() >= 5:  # Skip Sat/Sun
-                current_date += pd.Timedelta(days=1)
-
-            ret = returns[i]
-
-            # Scale returns by volatility (reduced impact for stability)
-            ret = ret * vol_multiplier
-
-            # Apply graduated smoothing for extreme returns
-            # First soft cap at 2%, then hard cap at 3%
-            SOFT_CAP = 0.02  # 2% soft cap
-            HARD_CAP = 0.03  # 3% hard cap (reduced from 5%)
-
-            if abs(ret) > SOFT_CAP:
-                sign = 1 if ret > 0 else -1
-                excess = abs(ret) - SOFT_CAP
-                # Dampen excess by 50%
-                ret = sign * (SOFT_CAP + excess * 0.5)
-
-            if abs(ret) > HARD_CAP:
-                sign = 1 if ret > 0 else -1
-                logger.warning(
-                    f"Capping prediction day {i+1}: {ret:.2%} -> {sign*HARD_CAP:.2%}"
-                )
-                ret = sign * HARD_CAP
-
-            # Convert log return to price: P_t = P_{t-1} * exp(r_t)
+            current_date = self._next_business_day_simple(current_date)
+            ret = self._apply_return_adjustments(returns[i], vol_multiplier, i)
             next_price = current_price * np.exp(ret)
 
-            forecasts.append(
-                {
-                    "horizon": i + 1,
-                    "date": current_date.strftime("%Y-%m-%d"),
-                    "forecasted_price": round(next_price, 2),
-                    "forecasted_return": round(float(ret), 4),
-                }
-            )
+            forecasts.append({
+                "horizon": i + 1,
+                "date": current_date.strftime("%Y-%m-%d"),
+                "forecasted_price": round(next_price, 2),
+                "forecasted_return": round(float(ret), 4),
+            })
 
             current_price = next_price
 
         return forecasts
+
+    def _calculate_volatility_multiplier(self, recent_volatility: float) -> float:
+        """Calculate volatility multiplier with caps."""
+        BASELINE_VOL = 0.018
+        if recent_volatility <= 0:
+            return 1.0
+        
+        vol_multiplier = max(1.0, recent_volatility / BASELINE_VOL)
+        return min(vol_multiplier, 1.3)
+
+    def _next_business_day_simple(self, date: pd.Timestamp) -> pd.Timestamp:
+        """Get next business day (skip weekends)."""
+        date += pd.Timedelta(days=1)
+        while date.weekday() >= 5:
+            date += pd.Timedelta(days=1)
+        return date
+
+    def _apply_return_adjustments(self, ret: float, vol_multiplier: float, day_index: int) -> float:
+        """Apply volatility scaling and caps to return."""
+        ret = ret * vol_multiplier
+
+        # Soft cap at 2%
+        SOFT_CAP = 0.02
+        if abs(ret) > SOFT_CAP:
+            sign = 1 if ret > 0 else -1
+            excess = abs(ret) - SOFT_CAP
+            ret = sign * (SOFT_CAP + excess * 0.5)
+
+        # Hard cap at 3%
+        HARD_CAP = 0.03
+        if abs(ret) > HARD_CAP:
+            sign = 1 if ret > 0 else -1
+            logger.warning(f"Capping prediction day {day_index+1}: {ret:.2%} -> {sign*HARD_CAP:.2%}")
+            ret = sign * HARD_CAP
+
+        return ret
 
     def _next_business_day(
         self, start_date: pd.Timestamp, days_ahead: int
