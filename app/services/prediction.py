@@ -173,7 +173,6 @@ class PredictionService:
             last_price,
             last_date,
             self.artifacts.horizon,
-            recent_momentum,
             recent_volatility,
         )
 
@@ -522,21 +521,20 @@ class PredictionService:
         """Generate mid-frequency GRU forecast."""
         try:
             # Prepare features
-            # ML convention: X for features matrix
-            X_mid = prepare_mid_features(df, lookback)  # noqa: N806
+            x_mid = prepare_mid_features(df, lookback)
 
             # Scale features
-            X_mid_flat = X_mid.reshape(-1, X_mid.shape[-1])  # noqa: N806
-            X_mid_scaled = self.artifacts.scaler_mid.transform(X_mid_flat)  # noqa: N806
-            X_mid_scaled = X_mid_scaled.reshape(1, lookback, -1)
+            x_mid_flat = x_mid.reshape(-1, x_mid.shape[-1])
+            x_mid_scaled = self.artifacts.scaler_mid.transform(x_mid_flat)
+            x_mid_scaled = x_mid_scaled.reshape(1, lookback, -1)
 
             # Convert to tensor
-            X_tensor = torch.tensor(X_mid_scaled, dtype=torch.float32)  # noqa: N806
-            X_tensor = X_tensor.to(self.artifacts.device)
+            x_tensor = torch.tensor(x_mid_scaled, dtype=torch.float32)
+            x_tensor = x_tensor.to(self.artifacts.device)
 
             # Predict
             with torch.no_grad():
-                forecast = self.artifacts.mid_gru(X_tensor).cpu().numpy().flatten()
+                forecast = self.artifacts.mid_gru(x_tensor).cpu().numpy().flatten()
 
             logger.info("Mid-GRU forecast generated")
             return forecast
@@ -553,31 +551,30 @@ class PredictionService:
         """
         try:
             # Prepare features
-            # ML convention: X for features, p for price, s for sentiment
-            Xp, Xs = prepare_sentiment_features(df, lookback)  # noqa: N806
+            x_price, x_sent = prepare_sentiment_features(df, lookback)
 
             # Scale features
-            Xp_flat = Xp.reshape(-1, Xp.shape[-1])  # noqa: N806
-            Xs_flat = Xs.reshape(-1, Xs.shape[-1])  # noqa: N806
+            x_price_flat = x_price.reshape(-1, x_price.shape[-1])
+            x_sent_flat = x_sent.reshape(-1, x_sent.shape[-1])
 
-            Xp_scaled = self.artifacts.scaler_price.transform(Xp_flat)  # noqa: N806
-            Xs_scaled = self.artifacts.scaler_sent.transform(Xs_flat)  # noqa: N806
+            x_price_scaled = self.artifacts.scaler_price.transform(x_price_flat)
+            x_sent_scaled = self.artifacts.scaler_sent.transform(x_sent_flat)
 
-            Xp_scaled = Xp_scaled.reshape(1, lookback, -1)
-            Xs_scaled = Xs_scaled.reshape(1, lookback, -1)
+            x_price_scaled = x_price_scaled.reshape(1, lookback, -1)
+            x_sent_scaled = x_sent_scaled.reshape(1, lookback, -1)
 
             # Convert to tensors
-            Xp_tensor = torch.tensor(Xp_scaled, dtype=torch.float32).to(  # noqa: N806
+            x_price_tensor = torch.tensor(x_price_scaled, dtype=torch.float32).to(
                 self.artifacts.device
             )
-            Xs_tensor = torch.tensor(Xs_scaled, dtype=torch.float32).to(  # noqa: N806
+            x_sent_tensor = torch.tensor(x_sent_scaled, dtype=torch.float32).to(
                 self.artifacts.device
             )
 
             # Predict
             with torch.no_grad():
                 forecast = (
-                    self.artifacts.sent_gru(Xp_tensor, Xs_tensor)
+                    self.artifacts.sent_gru(x_price_tensor, x_sent_tensor)
                     .cpu()
                     .numpy()
                     .flatten()
@@ -594,13 +591,12 @@ class PredictionService:
         """Generate XGBoost high-frequency forecasts for each horizon."""
         try:
             # Prepare features (only last row)
-            # ML convention: X for features matrix
-            X_hf = prepare_hf_features(df)  # noqa: N806
+            x_hf = prepare_hf_features(df)
 
             # Predict for each horizon
             forecasts = []
             for h in range(1, horizon + 1):
-                pred = self.artifacts.xgb_hf_models[h].predict(X_hf)[0]
+                pred = self.artifacts.xgb_hf_models[h].predict(x_hf)[0]
                 forecasts.append(pred)
 
             logger.info("XGBoost HF forecasts generated")
@@ -630,16 +626,15 @@ class PredictionService:
 
         for h in range(1, horizon + 1):
             # Stack component forecasts
-            # ML convention: X for features matrix
-            X_meta = np.array(  # noqa: N806
+            x_meta = np.array(
                 [[trend_fc[h - 1], mid_fc[h - 1], sent_fc[h - 1], hf_fc[h - 1]]]
             )
 
             # Scale
-            X_meta_scaled = self.artifacts.meta_scalers[h].transform(X_meta)  # noqa: N806
+            x_meta_scaled = self.artifacts.meta_scalers[h].transform(x_meta)
 
             # Predict
-            pred = self.artifacts.meta_models[h].predict(X_meta_scaled)[0]
+            pred = self.artifacts.meta_models[h].predict(x_meta_scaled)[0]
             ensemble_fc.append(pred)
 
         logger.info("Meta-ensemble combination complete")
@@ -651,7 +646,6 @@ class PredictionService:
         last_price: float,
         last_date: pd.Timestamp,
         horizon: int,
-        recent_momentum: float = 0.0,  # noqa: ARG002  # May be used in future enhancements
         recent_volatility: float = 0.0,
     ) -> List[Dict[str, Any]]:
         """
@@ -662,7 +656,6 @@ class PredictionService:
             last_price: Last known price
             last_date: Last known date
             horizon: Forecast horizon
-            recent_momentum: Recent price momentum (7-day return)
             recent_volatility: Recent volatility (7-day std of returns)
         """
         forecasts = []
