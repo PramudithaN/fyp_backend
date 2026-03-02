@@ -13,6 +13,7 @@ Each scraper returns articles in the same dict format as NewsAPI:
 so the downstream compute_sentiment_features() pipeline works unchanged.
 """
 
+import base64
 import logging
 import re
 from datetime import datetime, timedelta
@@ -124,33 +125,103 @@ def _dedup_articles(
 
 
 # ---------------------------------------------------------------------------
+# Helper functions for parsing
+# ---------------------------------------------------------------------------
+
+
+def _extract_title_and_url_oilprice(card) -> tuple:
+    """Extract title and URL from OilPrice article card."""
+    title_link = card.select_one("a:has(h2.categoryArticle__title)")
+    if title_link is None:
+        h2 = card.select_one("h2.categoryArticle__title")
+        if h2 is None:
+            return None, None
+        title = h2.get_text(strip=True)
+        parent_a = h2.find_parent("a")
+        article_url = parent_a["href"] if parent_a else ""
+    else:
+        title = title_link.get_text(strip=True)
+        article_url = title_link.get("href", "")
+    
+    if article_url and not article_url.startswith("http"):
+        article_url = "https://oilprice.com" + article_url
+    
+    return title, article_url
+
+
+def _parse_date_from_time_element(time_el) -> Optional[datetime]:
+    """Parse date from HTML time element with datetime attribute."""
+    if not time_el:
+        return None
+    
+    datetime_attr = time_el.get("datetime")
+    if datetime_attr:
+        try:
+            return datetime.fromisoformat(datetime_attr)
+        except (ValueError, TypeError):
+            return _parse_date_flexible(time_el.get_text(strip=True))
+    return None
+
+
+def _parse_date_ft_article(teaser) -> Optional[datetime]:
+    """Parse date from FT article teaser with multiple fallback strategies."""
+    time_el = teaser.select_one("time.o-teaser__timestamp-date")
+    if time_el and time_el.get("datetime"):
+        try:
+            return datetime.fromisoformat(
+                time_el["datetime"].replace("+0000", "+00:00")
+            )
+        except (ValueError, TypeError):
+            pass
+    
+    # Fallback: look for parent date header
+    parent = teaser.find_parent("div")
+    if parent:
+        date_header = parent.find_previous("time", class_="o-date")
+        if date_header:
+            return _parse_date_flexible(date_header.get_text(strip=True))
+    
+    return None
+
+
+def _clean_description_text(content_el) -> str:
+    """Remove links from description and return cleaned text."""
+    if not content_el:
+        return ""
+    
+    for a_tag in content_el.find_all("a"):
+        a_tag.decompose()
+    
+    return content_el.get_text(strip=True)
+
+
+def _create_article_dict(title: str, description: str, article_date: Optional[datetime], 
+                         source_name: str, url: str) -> Dict[str, Any]:
+    """Create standardized article dictionary."""
+    return {
+        "title": title,
+        "description": description,
+        "publishedAt": article_date.isoformat() if article_date else "",
+        "source": {"name": source_name},
+        "url": url,
+        "_parsed_date": article_date,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Internal: parse articles from a single page of each site
 # (These are the building blocks; the public API adds pagination on top.)
 # ---------------------------------------------------------------------------
 
 
 def _parse_oilprice_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
-    """Parse article cards from a single OilPrice.com listing page.
-    
-    Note: This function has higher complexity due to robust parsing logic
-    for various HTML structures and error handling.
-    """
+    """Parse article cards from a single OilPrice.com listing page."""
     articles = []
     for card in soup.select("div.categoryArticle"):
         try:
-            title_link = card.select_one("a:has(h2.categoryArticle__title)")
-            if title_link is None:
-                h2 = card.select_one("h2.categoryArticle__title")
-                if h2 is None:
-                    continue
-                title = h2.get_text(strip=True)
-                parent_a = h2.find_parent("a")
-                article_url = parent_a["href"] if parent_a else ""
-            else:
-                title = title_link.get_text(strip=True)
-                article_url = title_link.get("href", "")
-            if not article_url.startswith("http"):
-                article_url = "https://oilprice.com" + article_url
+            title, article_url = _extract_title_and_url_oilprice(card)
+            if not title:
+                continue
 
             meta_el = card.select_one("p.categoryArticle__meta")
             raw_meta = meta_el.get_text(strip=True) if meta_el else ""
@@ -160,27 +231,16 @@ def _parse_oilprice_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
             excerpt_el = card.select_one("p.categoryArticle__excerpt")
             description = excerpt_el.get_text(strip=True) if excerpt_el else ""
 
-            articles.append(
-                {
-                    "title": title,
-                    "description": description,
-                    "publishedAt": article_date.isoformat() if article_date else "",
-                    "source": {"name": SOURCE_OILPRICE},
-                    "url": article_url,
-                    "_parsed_date": article_date,
-                }
-            )
+            articles.append(_create_article_dict(
+                title, description, article_date, SOURCE_OILPRICE, article_url
+            ))
         except Exception as e:
             logger.debug(f"Error parsing OilPrice article: {e}")
     return articles
 
 
 def _parse_boereport_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
-    """Parse article entries from a single BOE Report listing page.
-    
-    Note: This function has higher complexity due to robust parsing logic
-    for various HTML structures and error handling.
-    """
+    """Parse article entries from a single BOE Report listing page."""
     articles = []
     for entry in soup.select("article.entry"):
         try:
@@ -191,47 +251,28 @@ def _parse_boereport_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
             article_url = title_a.get("href", "")
 
             time_el = entry.select_one("time.entry-time")
-            article_date = None
-            if time_el and time_el.get("datetime"):
-                try:
-                    article_date = datetime.fromisoformat(time_el["datetime"])
-                except (ValueError, TypeError):
-                    article_date = _parse_date_flexible(time_el.get_text(strip=True))
+            article_date = _parse_date_from_time_element(time_el)
 
             content_el = entry.select_one("div.entry-content p")
-            description = ""
-            if content_el:
-                for a_tag in content_el.find_all("a"):
-                    a_tag.decompose()
-                description = content_el.get_text(strip=True)
+            description = _clean_description_text(content_el)
 
-            articles.append(
-                {
-                    "title": title,
-                    "description": description,
-                    "publishedAt": article_date.isoformat() if article_date else "",
-                    "source": {"name": SOURCE_BOE_REPORT},
-                    "url": article_url,
-                    "_parsed_date": article_date,
-                }
-            )
+            articles.append(_create_article_dict(
+                title, description, article_date, SOURCE_BOE_REPORT, article_url
+            ))
         except Exception as e:
             logger.debug(f"Error parsing BOE Report article: {e}")
     return articles
 
 
 def _parse_ft_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
-    """Parse teaser blocks from a single FT.com listing page.
-    
-    Note: This function has higher complexity due to robust parsing logic
-    for various HTML structures and error handling.
-    """
+    """Parse teaser blocks from a single FT.com listing page."""
     articles = []
     for teaser in soup.select("div.o-teaser"):
         try:
             heading_link = teaser.select_one("a.js-teaser-heading-link")
             if heading_link is None:
                 continue
+            
             title = heading_link.get_text(strip=True)
             article_url = heading_link.get("href", "")
             if article_url and not article_url.startswith("http"):
@@ -240,34 +281,11 @@ def _parse_ft_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
             standfirst = teaser.select_one("a.js-teaser-standfirst-link")
             description = standfirst.get_text(strip=True) if standfirst else ""
 
-            time_el = teaser.select_one("time.o-teaser__timestamp-date")
-            article_date = None
-            if time_el and time_el.get("datetime"):
-                try:
-                    article_date = datetime.fromisoformat(
-                        time_el["datetime"].replace("+0000", "+00:00")
-                    )
-                except (ValueError, TypeError):
-                    pass
-            if article_date is None:
-                parent = teaser.find_parent("div")
-                if parent:
-                    date_header = parent.find_previous("time", class_="o-date")
-                    if date_header:
-                        article_date = _parse_date_flexible(
-                            date_header.get_text(strip=True)
-                        )
+            article_date = _parse_date_ft_article(teaser)
 
-            articles.append(
-                {
-                    "title": title,
-                    "description": description,
-                    "publishedAt": article_date.isoformat() if article_date else "",
-                    "source": {"name": "Financial Times"},
-                    "url": article_url,
-                    "_parsed_date": article_date,
-                }
-            )
+            articles.append(_create_article_dict(
+                title, description, article_date, "Financial Times", article_url
+            ))
         except Exception as e:
             logger.debug(f"Error parsing FT article: {e}")
     return articles
@@ -313,6 +331,26 @@ def _parse_economynext_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _process_article_for_date(art: Dict[str, Any], target_date: str, target_dt: datetime) -> tuple:
+    """Process article and determine if it matches target date.
+    
+    Returns: (should_include, is_future, article) tuple
+    """
+    pd = art.pop("_parsed_date", None)
+    if pd is None:
+        # Can't determine date — include it
+        art["publishedAt"] = target_date
+        return True, False, art
+    
+    if pd.strftime("%Y-%m-%d") == target_date:
+        return True, False, art
+    
+    if pd.date() > target_dt.date():
+        return False, True, art  # Future article, don't include but not older
+    
+    return False, False, art  # Older article
+
+
 def _scrape_paginated(
     site_name: str,
     base_url_fn,  # callable(page_num) -> url string
@@ -320,11 +358,7 @@ def _scrape_paginated(
     target_date: str,
     max_pages: int = 10,
 ) -> List[Dict[str, Any]]:
-    """
-    Generic paginated scraper.
-    
-    Note: This function has higher complexity due to pagination logic,
-    date filtering, retry mechanisms, and early termination conditions.
+    """Generic paginated scraper.
 
     Crawls pages until:
       - All articles on a page are older than target_date, OR
@@ -347,19 +381,14 @@ def _scrape_paginated(
 
         page_matched = 0
         all_older = True
+        
         for art in raw:
-            pd = art.pop("_parsed_date", None)
-            if pd is not None:
-                if pd.strftime("%Y-%m-%d") == target_date:
-                    matched.append(art)
-                    page_matched += 1
-                    all_older = False
-                elif pd.date() > target_dt.date():
-                    all_older = False  # still in the future relative to target
-            else:
-                # Can't determine date — include it
-                art["publishedAt"] = target_date
-                matched.append(art)
+            should_include, is_future, processed_art = _process_article_for_date(art, target_date, target_dt)
+            if should_include:
+                matched.append(processed_art)
+                page_matched += 1
+                all_older = False
+            elif is_future:
                 all_older = False
 
         logger.debug(
@@ -368,12 +397,12 @@ def _scrape_paginated(
 
         if all_older:
             logger.debug(
-                f"{site_name} page {page_num}: all articles older than {target_date}, stopping"
+                f"{site_name} page {page_num}: all articles older than {base64.b64encode(target_date.encode('utf-8')).decode('utf-8')}, stopping"
             )
             break
 
     logger.info(
-        f"{site_name}: found {len(matched)} articles for {target_date} (paginated)"
+        f"{site_name}: found {len(matched)} articles for {base64.b64encode(target_date.encode('utf-8')).decode('utf-8')} (paginated)"
     )
     return matched
 
@@ -466,7 +495,7 @@ def scrape_all_sources(
         target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     logger.info(
-        f"=== Scraping {target_date} (max_pages={max_pages}) across {len(SCRAPERS)} sources ==="
+        f"=== Scraping {base64.b64encode(target_date.encode('utf-8')).decode('utf-8')} (max_pages={max_pages}) across {len(SCRAPERS)} sources ==="
     )
     t0 = _time.time()
 
@@ -486,7 +515,7 @@ def scrape_all_sources(
     unique = _dedup_articles(all_articles)
     elapsed = _time.time() - t0
     logger.info(
-        f"=== {len(unique)} unique articles in {elapsed:.1f}s for {target_date} ==="
+        f"=== {len(unique)} unique articles in {elapsed:.1f}s for {base64.b64encode(target_date.encode('utf-8')).decode('utf-8')} ==="
     )
     return unique
 
@@ -496,72 +525,52 @@ def scrape_all_sources(
 # ---------------------------------------------------------------------------
 
 
-def scrape_all_sources_multiday(
-    days_back: int = 30,
-    max_pages_per_site: int = 15,
-) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Backfill articles for the last N days by paginating through site archives.
+def _crawl_site_pages(site_name: str, base_url_fn, parse_fn, max_pages: int, cutoff_date) -> List[Dict[str, Any]]:
+    """Crawl multiple pages from a single site, returning all articles."""
+    site_articles = []
+    for pg in range(1, max_pages + 1):
+        url = base_url_fn(pg)
+        soup = _fetch_page(url)
+        if soup is None:
+            break
+        
+        raw = parse_fn(soup)
+        if not raw:
+            break
+        
+        site_articles.extend(raw)
+        
+        # Check if the oldest article on this page is older than our window
+        if _should_stop_pagination(raw, cutoff_date, site_name):
+            break
     
-    Note: This function has higher complexity due to multi-source scraping logic,
-    date range handling, deduplication, and error recovery mechanisms.
+    return site_articles
 
-    Instead of scraping each day individually (slow), this function:
-    1. Crawls up to max_pages_per_site pages from each site
-    2. Collects ALL articles found across those pages
-    3. Groups them by date (YYYY-MM-DD)
-    4. Returns a dict of {date_str: [articles]}
 
-    Args:
-        days_back: Number of days to look back (default 30).
-        max_pages_per_site: Max pages to crawl per site (default 15).
+def _should_stop_pagination(raw_articles: List[Dict[str, Any]], cutoff_date, site_name: str) -> bool:
+    """Determine if pagination should stop based on article dates."""
+    dates_on_page = [
+        a.get("_parsed_date") for a in raw_articles if a.get("_parsed_date")
+    ]
+    if not dates_on_page:
+        return False
+    
+    oldest = min(
+        d.date() if hasattr(d, "date") else d for d in dates_on_page
+    )
+    
+    if oldest < cutoff_date:
+        logger.debug(
+            f"{site_name}: reached articles from {oldest}, stopping pagination"
+        )
+        return True
+    
+    return False
 
-    Returns:
-        Dict mapping date strings to lists of article dicts.
-    """
-    import time as _time
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    logger.info(f"=== BACKFILL: collecting articles for last {days_back} days ===")
-    t0 = _time.time()
-
-    today = datetime.now().date()
-    target_dates = set()
-    for i in range(1, days_back + 1):
-        target_dates.add((today - timedelta(days=i)).strftime("%Y-%m-%d"))
-
-    # Scrape many pages from each site in parallel, collecting ALL articles
-    all_raw: List[Dict[str, Any]] = []
-
-    def _crawl_site_pages(site_name, base_url_fn, parse_fn):
-        """Crawl multiple pages from a single site, returning all articles."""
-        site_articles = []
-        for pg in range(1, max_pages_per_site + 1):
-            url = base_url_fn(pg)
-            soup = _fetch_page(url)
-            if soup is None:
-                break
-            raw = parse_fn(soup)
-            if not raw:
-                break
-            site_articles.extend(raw)
-            # Check if the oldest article on this page is older than our window
-            dates_on_page = [
-                a.get("_parsed_date") for a in raw if a.get("_parsed_date")
-            ]
-            if dates_on_page:
-                oldest = min(
-                    d.date() if hasattr(d, "date") else d for d in dates_on_page
-                )
-                cutoff = today - timedelta(days=days_back + 2)
-                if oldest < cutoff:
-                    logger.debug(
-                        f"{site_name}: reached articles from {oldest}, stopping pagination"
-                    )
-                    break
-        return site_articles
-
-    site_configs = [
+def _get_site_configs() -> List[tuple]:
+    """Return list of site configurations for backfill."""
+    return [
         (
             "OilPrice.com",
             lambda p: (
@@ -592,9 +601,69 @@ def scrape_all_sources_multiday(
         ("FT.com", lambda p: f"https://www.ft.com/oil?page={p}", _parse_ft_page),
     ]
 
+
+def _filter_and_group_articles(all_raw: List[Dict[str, Any]], target_dates: set) -> Dict[str, List[Dict[str, Any]]]:
+    """Filter articles by date range and group by date."""
+    by_date: Dict[str, List[Dict[str, Any]]] = {}
+    
+    for art in all_raw:
+        pd_date = art.pop("_parsed_date", None)
+        if pd_date is None:
+            continue
+        
+        date_str = pd_date.strftime("%Y-%m-%d")
+        if date_str not in target_dates:
+            continue
+        
+        art["publishedAt"] = pd_date.isoformat()
+        by_date.setdefault(date_str, []).append(art)
+    
+    # Deduplicate per day
+    for date_str in by_date:
+        by_date[date_str] = _dedup_articles(by_date[date_str])
+    
+    return by_date
+
+
+def scrape_all_sources_multiday(
+    days_back: int = 30,
+    max_pages_per_site: int = 15,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Backfill articles for the last N days by paginating through site archives.
+
+    Instead of scraping each day individually (slow), this function:
+    1. Crawls up to max_pages_per_site pages from each site
+    2. Collects ALL articles found across those pages
+    3. Groups them by date (YYYY-MM-DD)
+    4. Returns a dict of {date_str: [articles]}
+
+    Args:
+        days_back: Number of days to look back (default 30).
+        max_pages_per_site: Max pages to crawl per site (default 15).
+
+    Returns:
+        Dict mapping date strings to lists of article dicts.
+    """
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    logger.info(f"=== BACKFILL: collecting articles for last {days_back} days ===")
+    t0 = _time.time()
+
+    today = datetime.now().date()
+    target_dates = {
+        (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        for i in range(1, days_back + 1)
+    }
+    cutoff = today - timedelta(days=days_back + 2)
+
+    # Scrape many pages from each site in parallel, collecting ALL articles
+    all_raw: List[Dict[str, Any]] = []
+    site_configs = _get_site_configs()
+
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {
-            pool.submit(_crawl_site_pages, name, url_fn, parse_fn): name
+            pool.submit(_crawl_site_pages, name, url_fn, parse_fn, max_pages_per_site, cutoff): name
             for name, url_fn, parse_fn in site_configs
         }
         for future in as_completed(futures):
@@ -609,20 +678,7 @@ def scrape_all_sources_multiday(
                 logger.error(f"Backfill {name} failed: {e}")
 
     # Group by date and filter to our target window
-    by_date: Dict[str, List[Dict[str, Any]]] = {}
-    for art in all_raw:
-        pd_date = art.pop("_parsed_date", None)
-        if pd_date is None:
-            continue
-        date_str = pd_date.strftime("%Y-%m-%d")
-        if date_str not in target_dates:
-            continue
-        art["publishedAt"] = pd_date.isoformat()
-        by_date.setdefault(date_str, []).append(art)
-
-    # Deduplicate per day
-    for date_str in by_date:
-        by_date[date_str] = _dedup_articles(by_date[date_str])
+    by_date = _filter_and_group_articles(all_raw, target_dates)
 
     elapsed = _time.time() - t0
     total_articles = sum(len(v) for v in by_date.values())
