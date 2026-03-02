@@ -128,7 +128,13 @@ async def health_check():
     )
 
 
-@app.get("/prices", response_model=PriceDataResponse)
+@app.get(
+    "/prices",
+    response_model=PriceDataResponse,
+    responses={
+        500: {"model": ErrorResponse, "description": "Server error fetching prices"}
+    }
+)
 async def get_prices():
     """
     Fetch and display current Brent oil price data.
@@ -156,7 +162,14 @@ async def get_prices():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/predict", response_model=PredictionResponse)
+@app.get(
+    "/predict",
+    response_model=PredictionResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid input or validation error"},
+        500: {"model": ErrorResponse, "description": "Server error during prediction"}
+    }
+)
 async def predict_now():
     """
     Generate a 14-day forecast based on real-time data.
@@ -239,7 +252,12 @@ async def scraper_status():
     return get_scheduler_status()
 
 
-@app.post("/scraper/run")
+@app.post(
+    "/scraper/run",
+    responses={
+        500: {"model": ErrorResponse, "description": "Server error during scraper execution"}
+    }
+)
 async def scraper_run(target_date: str = None):
     """
     Manually trigger a news scraping run.
@@ -255,7 +273,12 @@ async def scraper_run(target_date: str = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/scraper/backfill")
+@app.post(
+    "/scraper/backfill",
+    responses={
+        500: {"model": ErrorResponse, "description": "Server error during backfill operation"}
+    }
+)
 async def scraper_backfill(days_back: int = 30, max_pages: int = 15):
     """
     Backfill the sentiment database for the last N days.
