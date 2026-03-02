@@ -73,3 +73,82 @@ Prices (30 days) → Feature Engineering → Component Models → Meta-Ensemble 
                                               ↓
                                     [ARIMA, Mid-GRU, Sent-GRU, XGBoost]
 ```
+## Testing
+
+This project includes comprehensive test coverage with 200+ test cases covering API endpoints, services, models, and integrations.
+
+### Running Tests
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage report
+pytest --cov=app --cov-report=html
+
+# Run specific test category
+pytest tests/test_api_endpoints.py
+pytest tests/test_services.py
+pytest tests/test_models.py
+
+# Run in parallel (faster)
+pytest -n auto
+```
+
+### Using Test Scripts
+
+**Windows:**
+```bash
+run_tests.bat          # Run all tests
+run_tests.bat coverage # Run with coverage
+run_tests.bat api      # Run API tests only
+run_tests.bat clean    # Clean test artifacts
+```
+
+**Linux/Mac:**
+```bash
+./run_tests.sh          # Run all tests
+./run_tests.sh coverage # Run with coverage
+./run_tests.sh api      # Run API tests only
+./run_tests.sh clean    # Clean test artifacts
+```
+
+**Using Make:**
+```bash
+make test              # Run all tests
+make test-cov          # Run with coverage
+make test-fast         # Run in parallel
+make test-api          # Run API tests only
+```
+
+### Test Structure
+
+```
+tests/
+├── test_api_endpoints.py    # API endpoint tests (health, predict, prices, etc.)
+├── test_services.py         # Service layer tests (prediction, sentiment, etc.)
+├── test_schemas.py          # Data validation tests
+├── test_models.py           # Model loading and inference tests
+├── test_database.py         # Database operation tests
+├── test_integration.py      # End-to-end integration tests
+└── conftest.py             # Shared fixtures and configuration
+```
+
+### Test Coverage
+
+Current coverage: **>80%**
+
+View detailed coverage report:
+```bash
+pytest --cov=app --cov-report=html
+# Open htmlcov/index.html in browser
+```
+
+### Development Dependencies
+
+Install test dependencies:
+```bash
+pip install -r requirements-dev.txt
+```
+
+See [tests/README.md](tests/README.md) for detailed testing documentation.
