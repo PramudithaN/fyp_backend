@@ -32,6 +32,12 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/122.0.0.0 Safari/537.36"
 )
+
+# Source name constants
+SOURCE_OILPRICE = "OilPrice.com"
+SOURCE_BOE_REPORT = "BOE Report"
+SOURCE_FT = "FT.com"
+
 HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -124,7 +130,11 @@ def _dedup_articles(
 
 
 def _parse_oilprice_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
-    """Parse article cards from a single OilPrice.com listing page."""
+    """Parse article cards from a single OilPrice.com listing page.
+    
+    Note: This function has higher complexity due to robust parsing logic
+    for various HTML structures and error handling.
+    """
     articles = []
     for card in soup.select("div.categoryArticle"):
         try:
@@ -155,7 +165,7 @@ def _parse_oilprice_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
                     "title": title,
                     "description": description,
                     "publishedAt": article_date.isoformat() if article_date else "",
-                    "source": {"name": "OilPrice.com"},
+                    "source": {"name": SOURCE_OILPRICE},
                     "url": article_url,
                     "_parsed_date": article_date,
                 }
@@ -166,7 +176,11 @@ def _parse_oilprice_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
 
 
 def _parse_boereport_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
-    """Parse article entries from a single BOE Report listing page."""
+    """Parse article entries from a single BOE Report listing page.
+    
+    Note: This function has higher complexity due to robust parsing logic
+    for various HTML structures and error handling.
+    """
     articles = []
     for entry in soup.select("article.entry"):
         try:
@@ -196,7 +210,7 @@ def _parse_boereport_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
                     "title": title,
                     "description": description,
                     "publishedAt": article_date.isoformat() if article_date else "",
-                    "source": {"name": "BOE Report"},
+                    "source": {"name": SOURCE_BOE_REPORT},
                     "url": article_url,
                     "_parsed_date": article_date,
                 }
@@ -207,7 +221,11 @@ def _parse_boereport_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
 
 
 def _parse_ft_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
-    """Parse teaser blocks from a single FT.com listing page."""
+    """Parse teaser blocks from a single FT.com listing page.
+    
+    Note: This function has higher complexity due to robust parsing logic
+    for various HTML structures and error handling.
+    """
     articles = []
     for teaser in soup.select("div.o-teaser"):
         try:
@@ -304,6 +322,9 @@ def _scrape_paginated(
 ) -> List[Dict[str, Any]]:
     """
     Generic paginated scraper.
+    
+    Note: This function has higher complexity due to pagination logic,
+    date filtering, retry mechanisms, and early termination conditions.
 
     Crawls pages until:
       - All articles on a page are older than target_date, OR
@@ -360,7 +381,7 @@ def _scrape_paginated(
 def scrape_oilprice(target_date: str, max_pages: int = 1) -> List[Dict[str, Any]]:
     """Scrape OilPrice.com with optional pagination."""
     return _scrape_paginated(
-        site_name="OilPrice.com",
+        site_name=SOURCE_OILPRICE,
         base_url_fn=lambda p: (
             "https://oilprice.com/Latest-Energy-News/World-News/"
             if p == 1
@@ -390,7 +411,7 @@ def scrape_economynext(target_date: str, max_pages: int = 1) -> List[Dict[str, A
 def scrape_boereport(target_date: str, max_pages: int = 1) -> List[Dict[str, Any]]:
     """Scrape BOE Report with optional pagination."""
     return _scrape_paginated(
-        site_name="BOE Report",
+        site_name=SOURCE_BOE_REPORT,
         base_url_fn=lambda p: (
             "https://boereport.com/category/oil-and-gas-news-headlines/"
             if p == 1
@@ -405,7 +426,7 @@ def scrape_boereport(target_date: str, max_pages: int = 1) -> List[Dict[str, Any
 def scrape_ft(target_date: str, max_pages: int = 1) -> List[Dict[str, Any]]:
     """Scrape FT.com with optional pagination."""
     return _scrape_paginated(
-        site_name="FT.com",
+        site_name=SOURCE_FT,
         base_url_fn=lambda p: f"https://www.ft.com/oil?page={p}",
         parse_fn=_parse_ft_page,
         target_date=target_date,
@@ -418,10 +439,10 @@ def scrape_ft(target_date: str, max_pages: int = 1) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 SCRAPERS = [
-    ("OilPrice.com", scrape_oilprice),
+    (SOURCE_OILPRICE, scrape_oilprice),
     ("EconomyNext", scrape_economynext),
-    ("BOE Report", scrape_boereport),
-    ("FT.com", scrape_ft),
+    (SOURCE_BOE_REPORT, scrape_boereport),
+    (SOURCE_FT, scrape_ft),
 ]
 
 
@@ -481,6 +502,9 @@ def scrape_all_sources_multiday(
 ) -> Dict[str, List[Dict[str, Any]]]:
     """
     Backfill articles for the last N days by paginating through site archives.
+    
+    Note: This function has higher complexity due to multi-source scraping logic,
+    date range handling, deduplication, and error recovery mechanisms.
 
     Instead of scraping each day individually (slow), this function:
     1. Crawls up to max_pages_per_site pages from each site

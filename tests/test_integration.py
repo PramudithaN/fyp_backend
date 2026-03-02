@@ -21,19 +21,20 @@ class TestPredictionPipeline:
         """Test complete prediction pipeline from data fetch to forecast."""
         # Mock price data
         dates = pd.date_range(end=datetime.now(), periods=30, freq="D")
+        rng = np.random.default_rng(42)
         mock_prices.return_value = pd.DataFrame(
-            {"date": dates, "price": np.random.uniform(70, 90, size=30)}
+            {"date": dates, "price": rng.uniform(70, 90, size=30)}
         )
 
         # Mock sentiment data
         mock_sentiment.return_value = pd.DataFrame(
             {
                 "date": dates,
-                "daily_sentiment": np.random.uniform(-0.5, 0.5, size=30),
-                "news_volume": np.random.randint(5, 20, size=30),
-                "log_news_volume": np.random.uniform(1.5, 3.0, size=30),
-                "decayed_news_volume": np.random.uniform(5, 15, size=30),
-                "high_news_regime": np.random.randint(0, 2, size=30),
+                "daily_sentiment": rng.uniform(-0.5, 0.5, size=30),
+                "news_volume": rng.integers(5, 20, size=30),
+                "log_news_volume": rng.uniform(1.5, 3.0, size=30),
+                "decayed_news_volume": rng.uniform(5, 15, size=30),
+                "high_news_regime": rng.integers(0, 2, size=30),
             }
         )
 
@@ -47,8 +48,8 @@ class TestPredictionPipeline:
         try:
             from app.services.prediction import prediction_service
 
-            result = prediction_service.predict(days_of_history=30)
-        except Exception as e:
+            prediction_service.predict(days_of_history=30)
+        except Exception:
             # Expected without real models
             pass
 
@@ -119,20 +120,21 @@ class TestDataFlow:
         from app.services.feature_engineering import engineer_all_features
 
         # Create minimal sentiment data
+        rng = np.random.default_rng(42)
         sentiment_df = pd.DataFrame(
             {
                 "date": sample_prices_df["date"],
-                "daily_sentiment": np.random.uniform(
+                "daily_sentiment": rng.uniform(
                     -0.5, 0.5, size=len(sample_prices_df)
                 ),
-                "news_volume": np.random.randint(5, 20, size=len(sample_prices_df)),
-                "log_news_volume": np.random.uniform(
+                "news_volume": rng.integers(5, 20, size=len(sample_prices_df)),
+                "log_news_volume": rng.uniform(
                     1.5, 3.0, size=len(sample_prices_df)
                 ),
-                "decayed_news_volume": np.random.uniform(
+                "decayed_news_volume": rng.uniform(
                     5, 15, size=len(sample_prices_df)
                 ),
-                "high_news_regime": np.random.randint(0, 2, size=len(sample_prices_df)),
+                "high_news_regime": rng.integers(0, 2, size=len(sample_prices_df)),
             }
         )
 

@@ -47,6 +47,9 @@ class PredictionService:
     ) -> List[Dict[str, Any]]:
         """
         End-to-end prediction: Fetch history -> Engineer features -> Forecast.
+        
+        Note: This function has higher complexity due to multi-model coordination,
+        data validation, feature engineering, and ensemble prediction logic.
 
         Args:
             prices: Optional historical prices (if None, fetches from Yahoo Finance)
@@ -156,8 +159,11 @@ class PredictionService:
         if len(prices) >= 8:
             recent_returns = np.diff(np.log(prices["price"].tail(8).values))
             recent_volatility = np.std(recent_returns)
+            recent_vol_pct = recent_volatility * 100
             logger.info(
-                f"Recent 7-day volatility: {recent_volatility:.4f} ({recent_volatility*100:.2f}% daily)"
+                "Recent 7-day volatility: %.4f (%.2f%% daily)",
+                recent_volatility,
+                recent_vol_pct,
             )
         else:
             recent_volatility = 0.015  # Default 1.5%
@@ -179,6 +185,9 @@ class PredictionService:
     ) -> dict:
         """
         Compute sentiment-based signals for trend reversal detection.
+        
+        Note: This function has higher complexity due to multi-factor signal computation,
+        divergence detection, momentum analysis, and adaptive adjustment logic.
 
         IMPROVED VERSION with:
         1. Sentiment momentum (rate of change)
@@ -260,8 +269,9 @@ class PredictionService:
                 # NEW: Trend Strength - significant price drop
                 if price_momentum < -0.05:  # >5% drop in 7 days
                     signals["trend_strength"] = -2.0  # Strong downtrend
+                    momentum_pct = price_momentum * 100
                     logger.info(
-                        f"STRONG DOWNTREND detected: {price_momentum*100:.1f}% in 7 days"
+                        "STRONG DOWNTREND detected: %.1f%% in 7 days", momentum_pct
                     )
                 elif price_momentum < -0.03:  # >3% drop
                     signals["trend_strength"] = -1.0
@@ -512,15 +522,16 @@ class PredictionService:
         """Generate mid-frequency GRU forecast."""
         try:
             # Prepare features
-            X_mid = prepare_mid_features(df, lookback)
+            # ML convention: X for features matrix
+            X_mid = prepare_mid_features(df, lookback)  # noqa: N806
 
             # Scale features
-            X_mid_flat = X_mid.reshape(-1, X_mid.shape[-1])
-            X_mid_scaled = self.artifacts.scaler_mid.transform(X_mid_flat)
+            X_mid_flat = X_mid.reshape(-1, X_mid.shape[-1])  # noqa: N806
+            X_mid_scaled = self.artifacts.scaler_mid.transform(X_mid_flat)  # noqa: N806
             X_mid_scaled = X_mid_scaled.reshape(1, lookback, -1)
 
             # Convert to tensor
-            X_tensor = torch.tensor(X_mid_scaled, dtype=torch.float32)
+            X_tensor = torch.tensor(X_mid_scaled, dtype=torch.float32)  # noqa: N806
             X_tensor = X_tensor.to(self.artifacts.device)
 
             # Predict
@@ -542,23 +553,24 @@ class PredictionService:
         """
         try:
             # Prepare features
-            Xp, Xs = prepare_sentiment_features(df, lookback)
+            # ML convention: X for features, p for price, s for sentiment
+            Xp, Xs = prepare_sentiment_features(df, lookback)  # noqa: N806
 
             # Scale features
-            Xp_flat = Xp.reshape(-1, Xp.shape[-1])
-            Xs_flat = Xs.reshape(-1, Xs.shape[-1])
+            Xp_flat = Xp.reshape(-1, Xp.shape[-1])  # noqa: N806
+            Xs_flat = Xs.reshape(-1, Xs.shape[-1])  # noqa: N806
 
-            Xp_scaled = self.artifacts.scaler_price.transform(Xp_flat)
-            Xs_scaled = self.artifacts.scaler_sent.transform(Xs_flat)
+            Xp_scaled = self.artifacts.scaler_price.transform(Xp_flat)  # noqa: N806
+            Xs_scaled = self.artifacts.scaler_sent.transform(Xs_flat)  # noqa: N806
 
             Xp_scaled = Xp_scaled.reshape(1, lookback, -1)
             Xs_scaled = Xs_scaled.reshape(1, lookback, -1)
 
             # Convert to tensors
-            Xp_tensor = torch.tensor(Xp_scaled, dtype=torch.float32).to(
+            Xp_tensor = torch.tensor(Xp_scaled, dtype=torch.float32).to(  # noqa: N806
                 self.artifacts.device
             )
-            Xs_tensor = torch.tensor(Xs_scaled, dtype=torch.float32).to(
+            Xs_tensor = torch.tensor(Xs_scaled, dtype=torch.float32).to(  # noqa: N806
                 self.artifacts.device
             )
 
@@ -582,7 +594,8 @@ class PredictionService:
         """Generate XGBoost high-frequency forecasts for each horizon."""
         try:
             # Prepare features (only last row)
-            X_hf = prepare_hf_features(df)
+            # ML convention: X for features matrix
+            X_hf = prepare_hf_features(df)  # noqa: N806
 
             # Predict for each horizon
             forecasts = []
@@ -617,12 +630,13 @@ class PredictionService:
 
         for h in range(1, horizon + 1):
             # Stack component forecasts
-            X_meta = np.array(
+            # ML convention: X for features matrix
+            X_meta = np.array(  # noqa: N806
                 [[trend_fc[h - 1], mid_fc[h - 1], sent_fc[h - 1], hf_fc[h - 1]]]
             )
 
             # Scale
-            X_meta_scaled = self.artifacts.meta_scalers[h].transform(X_meta)
+            X_meta_scaled = self.artifacts.meta_scalers[h].transform(X_meta)  # noqa: N806
 
             # Predict
             pred = self.artifacts.meta_models[h].predict(X_meta_scaled)[0]
@@ -637,7 +651,7 @@ class PredictionService:
         last_price: float,
         last_date: pd.Timestamp,
         horizon: int,
-        recent_momentum: float = 0.0,
+        recent_momentum: float = 0.0,  # noqa: ARG002  # May be used in future enhancements
         recent_volatility: float = 0.0,
     ) -> List[Dict[str, Any]]:
         """

@@ -42,7 +42,7 @@ class TestSentimentOperations:
         mock_conn.cursor.return_value = mock_cursor
         mock_get_conn.return_value = mock_conn
 
-        result = add_sentiment(
+        add_sentiment(
             date_str="2026-03-01",
             daily_sentiment_decay=0.5,
             news_volume=10,
@@ -165,7 +165,7 @@ class TestSentimentOperations:
             },
         ]
 
-        result = add_bulk_sentiment(bulk_data)
+        add_bulk_sentiment(bulk_data)
 
         # Verify execute was called (not executemany in current implementation)
         assert mock_cursor.execute.called
@@ -211,7 +211,7 @@ class TestDatabaseErrors:
         mock_get_conn.side_effect = sqlite3.Error("Connection failed")
 
         try:
-            result = get_sentiment_history(days=30)
+            get_sentiment_history(days=30)
         except Exception as e:
             assert isinstance(e, sqlite3.Error)
 
@@ -228,6 +228,13 @@ class TestDatabaseErrors:
         mock_get_conn.return_value = mock_conn
 
         try:
-            result = add_sentiment("2026-03-01", 0.5, 10)
+            add_sentiment(
+                date_str="2026-03-01",
+                daily_sentiment_decay=0.5,
+                news_volume=10,
+                log_news_volume=2.3,
+                decayed_news_volume=8.5,
+                high_news_regime=1,
+            )
         except Exception:
             pass  # Expected to fail

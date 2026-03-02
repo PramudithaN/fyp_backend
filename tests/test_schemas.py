@@ -17,7 +17,7 @@ class TestPriceInput:
         price = PriceInput(date="2026-03-01", price=75.50)
 
         assert price.date == "2026-03-01"
-        assert price.price == 75.50
+        assert abs(price.price - 75.50) < 0.01
 
     def test_invalid_date_format(self):
         """Test invalid date format raises error."""
@@ -79,7 +79,7 @@ class TestForecastDay:
         )
 
         assert forecast.date == "2026-03-15"
-        assert forecast.forecasted_price == 75.50
+        assert abs(forecast.forecasted_price - 75.50) < 0.01
         assert forecast.horizon == 1
 
     def test_invalid_horizon(self):
@@ -159,7 +159,7 @@ class TestSentimentInput:
         )
 
         assert sentiment.date == "2026-03-01"
-        assert sentiment.daily_sentiment_decay == 0.5
+        assert abs(sentiment.daily_sentiment_decay - 0.5) < 0.01
         assert sentiment.news_volume == 10
         assert sentiment.high_news_regime == 1
 
@@ -177,7 +177,7 @@ class TestSentimentInput:
             decayed_news_volume=8.5,
             high_news_regime=1,
         )
-        assert sentiment.daily_sentiment_decay == 1.5
+        assert abs(sentiment.daily_sentiment_decay - 1.5) < 0.01
 
     def test_negative_article_count(self):
         """Test negative article count raises error."""

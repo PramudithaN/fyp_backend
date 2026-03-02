@@ -245,6 +245,9 @@ def compute_sentiment_features(
 ) -> Dict[str, Any]:
     """
     Compute sentiment features from a list of articles.
+    
+    Note: This function has higher complexity due to multiple sentiment modes,
+    date handling, validation logic, and feature computation steps.
 
     IMPORTANT: This matches Colab training preprocessing exactly:
     - daily_sentiment: Simple mean of all article sentiments (NO within-day decay!)

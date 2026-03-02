@@ -216,7 +216,11 @@ if __name__ == "__main__":
 
     for text in test_texts:
         score = analyze_sentiment_finbert(text)
-        label = (
-            "positive" if score > 0.05 else "negative" if score < -0.05 else "neutral"
-        )
+        # Determine sentiment label based on score thresholds
+        if score > 0.05:
+            label = "positive"
+        elif score < -0.05:
+            label = "negative"
+        else:
+            label = "neutral"
         print(f"[{label:>8}] {score:+.4f}: {text[:50]}...")

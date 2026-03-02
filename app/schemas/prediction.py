@@ -125,5 +125,5 @@ class SentimentHistoryResponse(BaseModel):
 
     success: bool
     total_records: int
-    latest_date: Optional[str]
+    latest_date: Optional[str] = None
     data: List[dict]

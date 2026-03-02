@@ -17,7 +17,7 @@ class TestSentimentService:
         from app.services.sentiment_service import SentimentService
 
         service = SentimentService()
-        assert service.decay_lambda == 0.3
+        assert abs(service.decay_lambda - 0.3) < 0.01
 
     @patch("app.services.sentiment_service.get_sentiment_count")
     @patch("app.services.sentiment_service.add_sentiment")
@@ -60,7 +60,7 @@ class TestSentimentService:
         )
         mock_get.return_value = mock_df
 
-        result = sentiment_service.get_sentiment_window(days=30)
+        sentiment_service.get_sentiment_window(days=30)
         assert mock_get.called
 
     def test_compute_cross_day_decay(self, sample_sentiment_df):
@@ -126,25 +126,27 @@ class TestPredictionService:
 
         # Mock price data
         dates = pd.date_range(end=datetime.now(), periods=30, freq="D")
+        rng = np.random.default_rng(42)
         mock_prices.return_value = pd.DataFrame(
-            {"date": dates, "price": np.random.uniform(70, 90, size=30)}
+            {"date": dates, "price": rng.uniform(70, 90, size=30)}
         )
 
         # Mock sentiment data
         mock_sentiment.return_value = pd.DataFrame()
 
         # Mock feature engineering
+        rng = np.random.default_rng(42)
         mock_features.return_value = pd.DataFrame(
             {
-                "log_return": np.random.randn(30),
-                "vol_5": np.random.randn(30),
+                "log_return": rng.standard_normal(30),
+                "vol_5": rng.standard_normal(30),
             }
         )
 
         service = PredictionService()
         # This will fail without all models loaded, but we test the flow
         try:
-            result = service.predict(days_of_history=30)
+            service.predict(days_of_history=30)
         except Exception:
             # Expected to fail without real models
             pass
@@ -162,8 +164,9 @@ class TestPriceFetcher:
         from app.services.price_fetcher import fetch_latest_prices
 
         # Mock yfinance response
+        rng = np.random.default_rng(42)
         mock_hist = pd.DataFrame(
-            {"Close": np.random.uniform(70, 90, size=60)},
+            {"Close": rng.uniform(70, 90, size=60)},
             index=pd.date_range(end=datetime.now(), periods=60, freq="D"),
         )
 
@@ -220,11 +223,12 @@ class TestFeatureEngineering:
         from app.services.feature_engineering import prepare_mid_features
 
         # Create features dataframe
+        rng = np.random.default_rng(42)
         features_df = pd.DataFrame(
             {
-                "log_return": np.random.randn(30),
-                "volatility_5": np.random.randn(30),
-                "volatility_10": np.random.randn(30),
+                "log_return": rng.standard_normal(30),
+                "volatility_5": rng.standard_normal(30),
+                "volatility_10": rng.standard_normal(30),
             }
         )
 

@@ -46,7 +46,7 @@ class TestModelLoader:
         except FileNotFoundError:
             # Expected if model files don't exist
             pass
-        except Exception as e:
+        except Exception:
             # Other exceptions might occur, which is acceptable for this test
             pass
 
@@ -72,7 +72,7 @@ class TestGRUModels:
 
         model = MidFreqGRU(n_features=10, hidden_size=64, dropout=0.3, horizon=14)
 
-        assert model is not None
+        assert model
         assert hasattr(model, "gru")
         assert hasattr(model, "fc")
 
@@ -82,7 +82,7 @@ class TestGRUModels:
 
         model = SentimentGRU(n_price=10, n_sent=5, hidden=64, dropout=0.3, horizon=14)
 
-        assert model is not None
+        assert model
         assert hasattr(model, "price_gru")
         assert hasattr(model, "sent_gru")
         assert hasattr(model, "fc")
