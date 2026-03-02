@@ -1,0 +1,278 @@
+"""
+Automated daily scheduler for news scraping and sentiment computation.
+
+Uses APScheduler to run the scraper pipeline once per day:
+1. Scrape articles from all configured sources
+2. Compute sentiment features via FinBERT
+3. Store results in the SQLite database
+4. Apply sentiment decay if no articles found
+
+Can also be triggered manually via run_scraper_now().
+"""
+import logging
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+logger = logging.getLogger(__name__)
+
+# Global scheduler instance
+_scheduler: Optional[BackgroundScheduler] = None
+_last_run: Optional[Dict[str, Any]] = None
+
+
+def _run_daily_scrape(target_date: str = None) -> Dict[str, Any]:
+    """
+    Execute the full scraping + sentiment pipeline for a single day.
+
+    Args:
+        target_date: YYYY-MM-DD string. Defaults to yesterday.
+
+    Returns:
+        Summary dict with article count, sentiment value, status.
+    """
+    global _last_run
+
+    from app.services.news_scraper import scrape_all_sources
+    from app.services.news_fetcher import compute_sentiment_features
+    from app.services.sentiment_service import sentiment_service
+
+    if target_date is None:
+        target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    logger.info(f"[Scheduler] Starting daily scrape for {target_date}")
+    result = {
+        "date": target_date,
+        "started_at": datetime.now().isoformat(),
+        "status": "running",
+        "articles_found": 0,
+        "sentiment_value": None,
+        "decay_applied": False,
+        "error": None,
+    }
+
+    try:
+        # Step 1: Scrape articles
+        articles = scrape_all_sources(target_date=target_date)
+        result["articles_found"] = len(articles)
+
+        if articles:
+            # Step 2: Compute sentiment from scraped articles
+            features = compute_sentiment_features(articles)
+            result["sentiment_value"] = features["daily_sentiment_decay"]
+
+            # Step 3: Store in database
+            sentiment_service.add_daily_sentiment(
+                date_str=target_date,
+                daily_sentiment=features["daily_sentiment_decay"],
+                news_volume=features["news_volume"],
+                log_news_volume=features["log_news_volume"],
+                decayed_news_volume=features["decayed_news_volume"],
+                high_news_regime=features["high_news_regime"],
+            )
+            logger.info(
+                f"[Scheduler] Stored sentiment for {target_date}: "
+                f"{features['daily_sentiment_decay']:.4f} from {len(articles)} articles"
+            )
+        else:
+            # Step 2b: No articles → apply sentiment decay
+            logger.warning(f"[Scheduler] No articles found for {target_date}, applying sentiment decay")
+            decay_result = sentiment_service.apply_no_news_decay(target_date)
+            result["decay_applied"] = True
+            result["sentiment_value"] = decay_result.get("decayed_sentiment", 0.0)
+            logger.info(
+                f"[Scheduler] Applied decay for {target_date}: {result['sentiment_value']:.4f}"
+            )
+
+        result["status"] = "success"
+
+    except Exception as e:
+        logger.error(f"[Scheduler] Scrape pipeline failed for {target_date}: {e}", exc_info=True)
+        result["status"] = "error"
+        result["error"] = str(e)
+
+    result["completed_at"] = datetime.now().isoformat()
+    _last_run = result
+    return result
+
+
+def run_scraper_now(target_date: str = None) -> Dict[str, Any]:
+    """
+    Manually trigger a scrape run. Callable from API endpoints.
+
+    Args:
+        target_date: YYYY-MM-DD. Defaults to yesterday.
+
+    Returns:
+        Run result dict.
+    """
+    return _run_daily_scrape(target_date=target_date)
+
+
+def backfill_history(days_back: int = 30, max_pages_per_site: int = 15) -> Dict[str, Any]:
+    """
+    Backfill the last N days of sentiment history by paginating through
+    site archives. Designed to be called once after fresh deployment.
+
+    Workflow:
+    1. Crawl up to max_pages_per_site from each of the 4 news sites
+    2. Group scraped articles by date
+    3. For each date with articles → compute sentiment via FinBERT → store
+    4. For each date without articles → apply sentiment decay from previous day
+    5. Process dates in chronological order so decay chains work correctly
+
+    Args:
+        days_back: Number of days to backfill (default 30).
+        max_pages_per_site: How many pages to crawl per site (default 15).
+
+    Returns:
+        Summary dict with per-date results.
+    """
+    from app.services.news_scraper import scrape_all_sources_multiday
+    from app.services.news_fetcher import compute_sentiment_features
+    from app.services.sentiment_service import sentiment_service
+    from app.database import get_sentiment_for_dates
+
+    logger.info(f"[Backfill] Starting {days_back}-day backfill (max {max_pages_per_site} pages/site)")
+    started_at = datetime.now().isoformat()
+
+    # Step 1: Bulk-scrape articles across all pages/sites
+    articles_by_date = scrape_all_sources_multiday(
+        days_back=days_back,
+        max_pages_per_site=max_pages_per_site,
+    )
+
+    # Step 2: Build the full list of target dates (chronological order)
+    today = datetime.now().date()
+    all_dates = sorted(
+        [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_back, 0, -1)]
+    )
+
+    # Step 3: Check which dates already have data
+    if all_dates:
+        existing_df = get_sentiment_for_dates(all_dates[0], all_dates[-1])
+        existing_dates = set()
+        if not existing_df.empty:
+            import pandas as pd
+            existing_dates = set(pd.to_datetime(existing_df['date']).dt.strftime("%Y-%m-%d"))
+    else:
+        existing_dates = set()
+
+    # Step 4: Process each date chronologically
+    per_date_results = {}
+    for date_str in all_dates:
+        if date_str in existing_dates:
+            per_date_results[date_str] = {"status": "skipped", "reason": "already_exists"}
+            continue
+
+        articles = articles_by_date.get(date_str, [])
+        if articles:
+            try:
+                features = compute_sentiment_features(articles)
+                sentiment_service.add_daily_sentiment(
+                    date_str=date_str,
+                    daily_sentiment=features["daily_sentiment_decay"],
+                    news_volume=features["news_volume"],
+                    log_news_volume=features["log_news_volume"],
+                    decayed_news_volume=features["decayed_news_volume"],
+                    high_news_regime=features["high_news_regime"],
+                )
+                per_date_results[date_str] = {
+                    "status": "filled",
+                    "articles": len(articles),
+                    "sentiment": features["daily_sentiment_decay"],
+                }
+            except Exception as e:
+                logger.error(f"[Backfill] Failed to process {date_str}: {e}")
+                per_date_results[date_str] = {"status": "error", "error": str(e)}
+        else:
+            # No articles for this date → apply decay
+            try:
+                decay_result = sentiment_service.apply_no_news_decay(date_str)
+                per_date_results[date_str] = {
+                    "status": "decayed",
+                    "sentiment": decay_result.get("decayed_sentiment", 0.0),
+                }
+            except Exception as e:
+                logger.error(f"[Backfill] Decay failed for {date_str}: {e}")
+                per_date_results[date_str] = {"status": "error", "error": str(e)}
+
+    # Summary stats
+    filled = sum(1 for v in per_date_results.values() if v["status"] == "filled")
+    decayed = sum(1 for v in per_date_results.values() if v["status"] == "decayed")
+    skipped = sum(1 for v in per_date_results.values() if v["status"] == "skipped")
+    errors = sum(1 for v in per_date_results.values() if v["status"] == "error")
+
+    summary = {
+        "started_at": started_at,
+        "completed_at": datetime.now().isoformat(),
+        "days_back": days_back,
+        "days_filled": filled,
+        "days_decayed": decayed,
+        "days_skipped": skipped,
+        "days_errored": errors,
+        "details": per_date_results,
+    }
+
+    logger.info(
+        f"[Backfill] Complete: {filled} filled, {decayed} decayed, "
+        f"{skipped} skipped, {errors} errors"
+    )
+    return summary
+
+
+def get_scheduler_status() -> Dict[str, Any]:
+    """Return the current scheduler status and last run info."""
+    global _scheduler, _last_run
+
+    running = _scheduler is not None and _scheduler.running
+    next_run = None
+    if running:
+        jobs = _scheduler.get_jobs()
+        if jobs:
+            next_run = str(jobs[0].next_run_time)
+
+    return {
+        "scheduler_running": running,
+        "next_run": next_run,
+        "last_run": _last_run,
+    }
+
+
+def start_scheduler(hour: int = 6, minute: int = 0) -> None:
+    """
+    Start the background scheduler to run the scraper daily.
+
+    Args:
+        hour: Hour to run (UTC). Default: 6.
+        minute: Minute to run. Default: 0.
+    """
+    global _scheduler
+
+    if _scheduler is not None and _scheduler.running:
+        logger.warning("[Scheduler] Already running, skipping start")
+        return
+
+    _scheduler = BackgroundScheduler(daemon=True)
+    trigger = CronTrigger(hour=hour, minute=minute)
+    _scheduler.add_job(
+        _run_daily_scrape,
+        trigger=trigger,
+        id="daily_news_scrape",
+        name="Daily Oil News Scraper",
+        replace_existing=True,
+    )
+    _scheduler.start()
+    logger.info(f"[Scheduler] Started — daily scrape at {hour:02d}:{minute:02d} UTC")
+
+
+def stop_scheduler() -> None:
+    """Stop the background scheduler."""
+    global _scheduler
+    if _scheduler and _scheduler.running:
+        _scheduler.shutdown(wait=False)
+        logger.info("[Scheduler] Stopped")
+    _scheduler = None
+

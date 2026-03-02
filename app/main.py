@@ -18,12 +18,19 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import API_TITLE, API_DESCRIPTION, API_VERSION, BRENT_TICKER
+from app.config import (
+    API_TITLE, API_DESCRIPTION, API_VERSION, BRENT_TICKER,
+    SCRAPER_ENABLED, SCRAPER_SCHEDULE_HOUR, SCRAPER_SCHEDULE_MINUTE
+)
 from app.models.model_loader import model_artifacts
 from app.database import init_database
 from app.services.price_fetcher import fetch_latest_prices, get_last_n_trading_days
 from app.services.prediction import prediction_service
 from app.services.sentiment_service import sentiment_service
+from app.services.scraper_scheduler import (
+    start_scheduler, stop_scheduler, get_scheduler_status,
+    run_scraper_now, backfill_history
+)
 from app.schemas.prediction import (
     PredictionRequest,
     PredictionResponse,
@@ -56,10 +63,28 @@ async def lifespan(app: FastAPI):
         # Load ML models
         model_artifacts.load_all()
         logger.info("Models loaded successfully!")
+        
+        # Pre-load FinBERT sentiment model (eliminates cold-start on first request)
+        try:
+            from app.services.finbert_analyzer import preload_model
+            preload_model()
+        except Exception as e:
+            logger.warning(f"FinBERT preload skipped: {e}")
+        
+        # Start daily news scraper scheduler
+        if SCRAPER_ENABLED:
+            start_scheduler(
+                hour=SCRAPER_SCHEDULE_HOUR,
+                minute=SCRAPER_SCHEDULE_MINUTE
+            )
+            logger.info("News scraper scheduler started!")
     except Exception as e:
         logger.error(f"Failed to start: {e}")
         raise
     yield
+    # Shutdown
+    if SCRAPER_ENABLED:
+        stop_scheduler()
     logger.info("Shutting down application...")
 
 
@@ -206,6 +231,49 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "version": API_VERSION
     }
+
+
+@app.get("/scraper/status")
+async def scraper_status():
+    """Get the news scraper scheduler status and last run info."""
+    return get_scheduler_status()
+
+
+@app.post("/scraper/run")
+async def scraper_run(target_date: str = None):
+    """
+    Manually trigger a news scraping run.
+
+    Args:
+        target_date: Optional YYYY-MM-DD date to scrape. Defaults to yesterday.
+    """
+    try:
+        result = run_scraper_now(target_date=target_date)
+        return result
+    except Exception as e:
+        logger.error(f"Manual scraper run failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/scraper/backfill")
+async def scraper_backfill(days_back: int = 30, max_pages: int = 15):
+    """
+    Backfill the sentiment database for the last N days.
+
+    Crawls paginated archives of all news sources, computes sentiment,
+    and applies decay for days with no articles. Call once after fresh deployment
+    to fill the 30-day rolling window.
+
+    Args:
+        days_back: Number of days to backfill (default 30).
+        max_pages: Max pages to crawl per site (default 15).
+    """
+    try:
+        result = backfill_history(days_back=days_back, max_pages_per_site=max_pages)
+        return result
+    except Exception as e:
+        logger.error(f"Backfill failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

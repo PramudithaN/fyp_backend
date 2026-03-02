@@ -55,4 +55,12 @@ NEWSDATA_KEY = os.getenv("NEWSDATA_KEY", "")
 # Set to 'finbert' to use the custom ProsusAI/finbert model
 SENTIMENT_MODE = os.getenv("SENTIMENT_MODE", "finbert")
 
-
+# Web scraper configuration
+SCRAPER_ENABLED = os.getenv("SCRAPER_ENABLED", "true").lower() == "true"
+SCRAPER_SCHEDULE_HOUR = int(os.getenv("SCRAPER_SCHEDULE_HOUR", "6"))
+SCRAPER_SCHEDULE_MINUTE = int(os.getenv("SCRAPER_SCHEDULE_MINUTE", "0"))
+SCRAPER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/122.0.0.0 Safari/537.36"
+)

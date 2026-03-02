@@ -334,6 +334,55 @@ class SentimentService:
             "latest_sentiment": latest
         }
     
+    def apply_no_news_decay(self, date_str: str) -> Dict[str, Any]:
+        """
+        Apply sentiment decay for days with no news articles.
+        
+        Instead of storing 0.0, retrieves the previous day's raw sentiment
+        and decays it: decayed = exp(-LAMBDA) * previous_sentiment.
+        This prevents abrupt sentiment drops on no-news days.
+        
+        Args:
+            date_str: Date in YYYY-MM-DD format
+        
+        Returns:
+            Dict with the decayed sentiment value stored
+        """
+        decay_factor = np.exp(-self.decay_lambda)  # exp(-0.3) ≈ 0.7408
+        
+        # Find previous day's sentiment
+        prev_date = (pd.to_datetime(date_str) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        prev_df = get_sentiment_for_dates(prev_date, prev_date)
+        
+        if not prev_df.empty:
+            prev_sentiment = float(prev_df['daily_sentiment'].iloc[0])
+            decayed_sentiment = decay_factor * prev_sentiment
+        else:
+            # No previous data either — use 0.0
+            decayed_sentiment = 0.0
+        
+        # Store with zero news volume
+        add_sentiment(
+            date_str=date_str,
+            daily_sentiment_decay=decayed_sentiment,
+            news_volume=0,
+            log_news_volume=0.0,
+            decayed_news_volume=0.0,
+            high_news_regime=0,
+        )
+        
+        logger.info(
+            f"No-news decay for {date_str}: previous={prev_date}, "
+            f"decayed_sentiment={decayed_sentiment:.4f}"
+        )
+        
+        return {
+            "date": date_str,
+            "decayed_sentiment": decayed_sentiment,
+            "previous_date": prev_date,
+            "decay_factor": decay_factor,
+        }
+
     def compute_single_day_decayed_sentiment(
         self,
         current_sentiment: float,

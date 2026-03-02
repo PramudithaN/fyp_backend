@@ -227,6 +227,8 @@ def compute_sentiment_features(
     Returns:
         Dictionary with sentiment features
     """
+    import time
+
     if not articles:
         return {
             "daily_sentiment_decay": 0.0,
@@ -260,8 +262,13 @@ def compute_sentiment_features(
                     texts.append(text)
                 
                 logger.info(f"Analyzing {len(texts)} articles with custom FinBERT...")
+                t_sent = time.time()
                 all_sentiments = analyze_batch_finbert(texts)
-                logger.info(f"FinBERT analysis complete. Mean sentiment: {np.mean(all_sentiments):.4f}")
+                elapsed_sent = time.time() - t_sent
+                logger.info(
+                    f"FinBERT analysis complete in {elapsed_sent:.1f}s. "
+                    f"Mean sentiment: {np.mean(all_sentiments):.4f}"
+                )
             else:
                 logger.warning("Custom FinBERT not available, using simple sentiment")
                 use_finbert = False
@@ -304,6 +311,52 @@ def compute_sentiment_features(
     }
 
 
+def fetch_oil_news_combined(
+    date: str = None,
+    api_key: str = None,
+    page_size: int = 100
+) -> List[Dict[str, Any]]:
+    """
+    Fetch oil news from web scrapers first, then fall back to NewsAPI.
+    
+    Priority:
+    1. Web scraping (OilPrice, EconomyNext, BOE Report, FT)
+    2. NewsAPI (if scraping yields fewer than 3 articles)
+    
+    Args:
+        date: Date to fetch news for (YYYY-MM-DD). Default: yesterday.
+        api_key: NewsAPI key (for fallback).
+        page_size: Number of articles for NewsAPI fallback.
+    
+    Returns:
+        Combined list of article dictionaries.
+    """
+    if date is None:
+        date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    articles = []
+    
+    # Try web scraping first
+    try:
+        from app.services.news_scraper import scrape_all_sources
+        scraped = scrape_all_sources(target_date=date)
+        articles.extend(scraped)
+        logger.info(f"Web scraping returned {len(scraped)} articles for {date}")
+    except Exception as e:
+        logger.warning(f"Web scraping failed: {e}")
+    
+    # Fall back to NewsAPI if scraping yielded few results
+    if len(articles) < 3:
+        try:
+            newsapi_articles = fetch_oil_news(date=date, api_key=api_key, page_size=page_size)
+            articles.extend(newsapi_articles)
+            logger.info(f"NewsAPI fallback added {len(newsapi_articles)} articles")
+        except Exception as e:
+            logger.warning(f"NewsAPI fallback also failed: {e}")
+    
+    return articles
+
+
 def fetch_and_compute_sentiment(
     date: str = None,
     api_key: str = None,
@@ -311,6 +364,8 @@ def fetch_and_compute_sentiment(
 ) -> Dict[str, Any]:
     """
     Convenience function: Fetch news and compute sentiment features.
+    
+    Uses web scraping as primary source with NewsAPI fallback.
     
     Args:
         date: Date to analyze (YYYY-MM-DD). Default: yesterday.
@@ -320,11 +375,22 @@ def fetch_and_compute_sentiment(
     Returns:
         Dictionary with date and all sentiment features.
     """
+    import time
+
     if date is None:
         date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
     
-    articles = fetch_oil_news(date=date, api_key=api_key)
+    t_total = time.time()
+
+    t0 = time.time()
+    articles = fetch_oil_news_combined(date=date, api_key=api_key)
+    logger.info(f"[TIMING] News fetching took {time.time() - t0:.1f}s ({len(articles)} articles)")
+
+    t1 = time.time()
     features = compute_sentiment_features(articles, sentiment_mode=sentiment_mode)
+    logger.info(f"[TIMING] Sentiment computation took {time.time() - t1:.1f}s")
+
+    logger.info(f"[TIMING] Total fetch_and_compute_sentiment: {time.time() - t_total:.1f}s")
     
     return {
         "date": date,
@@ -339,13 +405,11 @@ if __name__ == "__main__":
     
     # Check for API key
     if not NEWSAPI_KEY:
-        print("Error: Set NEWSAPI_KEY environment variable")
-        print("  Windows: set NEWSAPI_KEY=your_key_here")
-        print("  Linux:   export NEWSAPI_KEY=your_key_here")
-        sys.exit(1)
+        print("Warning: NEWSAPI_KEY not set, using web scraping only")
     
     # Get date from command line or use yesterday
     date = sys.argv[1] if len(sys.argv) > 1 else None
     
     result = fetch_and_compute_sentiment(date=date)
     print(json.dumps(result, indent=2))
+

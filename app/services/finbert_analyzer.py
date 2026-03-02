@@ -1,11 +1,10 @@
 """
-Custom FinBERT-based sentiment analyzer for oil news.
+FinBERT-based sentiment analyzer for oil news.
 
-Uses ProsusAI/finbert model loaded from local directory.
-This matches the exact model and methodology used in Colab training.
+Uses the standard ProsusAI/finbert model from Hugging Face.
 
 MODEL DETAILS:
-- Source: ProsusAI/finbert (downloaded to model_artifacts/sentiment_model/finbert_sentiment_model/)
+- Source: ProsusAI/finbert (loaded directly from Hugging Face Hub)
 - Label Order: 0=negative, 1=neutral, 2=positive
 - Sentiment Score: probs[2] - probs[0] (positive - negative probability)
 
@@ -28,15 +27,9 @@ _device = None
 _model_loaded = False
 
 
-def get_model_path() -> Path:
-    """Get the path to the local sentiment model."""
-    from app.config import MODEL_ARTIFACTS_DIR
-    return MODEL_ARTIFACTS_DIR / "sentiment_model" / "finbert_sentiment_model"
-
-
 def load_sentiment_model():
     """
-    Load the custom FinBERT model and tokenizer from local directory.
+    Load the standard FinBERT model and tokenizer from Hugging Face.
     
     Returns:
         Tuple of (model, tokenizer, device)
@@ -46,22 +39,14 @@ def load_sentiment_model():
     if _model_loaded:
         return _model, _tokenizer, _device
     
-    model_path = get_model_path()
-    
-    if not model_path.exists():
-        logger.error(f"Sentiment model not found at: {model_path}")
-        raise FileNotFoundError(
-            f"Sentiment model not found at {model_path}. "
-            "Please ensure the model files are in model_artifacts/sentiment_model/finbert_sentiment_model/"
-        )
-    
-    logger.info(f"Loading sentiment model from: {model_path}")
+    model_name = "ProsusAI/finbert"
+    logger.info(f"Loading FinBERT model from Hugging Face: {model_name}")
     
     try:
         from transformers import AutoTokenizer, AutoModelForSequenceClassification
         
-        _tokenizer = AutoTokenizer.from_pretrained(str(model_path))
-        _model = AutoModelForSequenceClassification.from_pretrained(str(model_path))
+        _tokenizer = AutoTokenizer.from_pretrained(model_name)
+        _model = AutoModelForSequenceClassification.from_pretrained(model_name)
         
         # Use GPU if available
         _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -69,20 +54,19 @@ def load_sentiment_model():
         _model.eval()
         
         _model_loaded = True
-        logger.info(f"Sentiment model loaded successfully on {_device}")
+        logger.info(f"FinBERT model loaded successfully on {_device}")
         
         return _model, _tokenizer, _device
         
     except Exception as e:
-        logger.error(f"Failed to load sentiment model: {e}")
+        logger.error(f"Failed to load FinBERT model: {e}")
         raise
 
 
 def analyze_sentiment_finbert(text: str) -> float:
     """
-    Analyze sentiment of text using the custom FinBERT model.
+    Analyze sentiment of text using the FinBERT model.
     
-    This matches the Colab training code exactly:
     - Input: Article text (title + content)
     - Output: Sentiment score = probs[2] - probs[0] (positive - negative)
     - Range: -1 (very negative) to +1 (very positive)
@@ -114,10 +98,8 @@ def analyze_sentiment_finbert(text: str) -> float:
             outputs = model(**inputs)
             probs = torch.softmax(outputs.logits, dim=1).cpu().numpy()[0]
         
-        # Match Colab training code exactly:
-        # return probs[2] - probs[0]
-        # Even though config shows 0=positive, 1=negative, 2=neutral,
-        # we use the same formula as training for consistency
+        # Calculate sentiment score: probs[2] - probs[0]
+        # Label order: 0=negative, 1=neutral, 2=positive
         sentiment_score = probs[2] - probs[0]
         
         return float(sentiment_score)
@@ -131,7 +113,6 @@ def analyze_batch_finbert(texts: List[str], batch_size: int = 16) -> List[float]
     """
     Analyze sentiment of multiple texts efficiently using batching.
     
-    This matches the Colab methodology:
     - Each article gets an individual sentiment score
     - Scores are later averaged per day (simple mean)
     
@@ -179,7 +160,7 @@ def analyze_batch_finbert(texts: List[str], batch_size: int = 16) -> List[float]
                 probs = torch.softmax(outputs.logits, dim=1).cpu().numpy()
             
             # Calculate score for each item in batch
-            # Match Colab formula: probs[2] - probs[0]
+            # Formula: probs[2] - probs[0] (positive - negative)
             for j in range(len(batch)):
                 score = probs[j][2] - probs[j][0]
                 all_scores.append(float(score))
@@ -192,25 +173,35 @@ def analyze_batch_finbert(texts: List[str], batch_size: int = 16) -> List[float]
 
 
 def is_finbert_available() -> bool:
-    """Check if the custom FinBERT model is available."""
+    """Check if FinBERT model can be loaded from Hugging Face."""
     try:
-        model_path = get_model_path()
-        if not model_path.exists():
-            return False
-        
-        # Check for required files
-        required_files = ["config.json", "tokenizer.json"]
-        for f in required_files:
-            if not (model_path / f).exists():
-                return False
-        
-        # Also need either model.safetensors or pytorch_model.bin
-        has_model = (model_path / "model.safetensors").exists() or \
-                    (model_path / "pytorch_model.bin").exists()
-        
-        return has_model
-        
+        # Always return True since we load from Hugging Face
+        # The actual check happens when trying to load the model
+        return True
     except Exception:
+        return False
+
+
+def preload_model() -> bool:
+    """
+    Pre-load the FinBERT model into memory at startup.
+    
+    Call this from the FastAPI lifespan handler so that the first
+    prediction request doesn't pay the ~5-10s model-loading cost.
+    
+    Returns:
+        True if the model was loaded successfully, False otherwise.
+    """
+    import time
+    
+    try:
+        t0 = time.time()
+        load_sentiment_model()
+        elapsed = time.time() - t0
+        logger.info(f"FinBERT model pre-loaded from Hugging Face in {elapsed:.1f}s")
+        return True
+    except Exception as e:
+        logger.error(f"FinBERT preload failed: {e}")
         return False
 
 
@@ -223,11 +214,10 @@ if __name__ == "__main__":
         "Brent crude remains stable at $75 per barrel"
     ]
     
-    print("Testing custom FinBERT sentiment analyzer...")
-    print(f"Model available: {is_finbert_available()}")
+    print("Testing FinBERT sentiment analyzer...")
+    print("Loading model from Hugging Face: ProsusAI/finbert")
     
-    if is_finbert_available():
-        for text in test_texts:
-            score = analyze_sentiment_finbert(text)
-            label = "positive" if score > 0.05 else "negative" if score < -0.05 else "neutral"
-            print(f"[{label:>8}] {score:+.4f}: {text[:50]}...")
+    for text in test_texts:
+        score = analyze_sentiment_finbert(text)
+        label = "positive" if score > 0.05 else "negative" if score < -0.05 else "neutral"
+        print(f"[{label:>8}] {score:+.4f}: {text[:50]}...")

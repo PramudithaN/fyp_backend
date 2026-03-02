@@ -59,7 +59,10 @@ class PredictionService:
         if prices is None:
             logger.info(f"Auto-fetching {days_of_history} days of price history...")
             from app.services.price_fetcher import fetch_latest_prices
-            prices = fetch_latest_prices(lookback_days=90)
+            # Fetch extra days to account for NaN rows created by rolling windows
+            # Need lookback (30) + max_window (14) + buffer (20) = 64 days minimum
+            # Fetching 120 days ensures we have enough after dropna()
+            prices = fetch_latest_prices(lookback_days=120)
         else:
             logger.info(f"Using provided price data ({len(prices)} points)")
             # Ensure required columns
@@ -76,7 +79,7 @@ class PredictionService:
                 price_end_date = pd.to_datetime(prices['date'].iloc[-1])
                 
                 # Get sentiment history aligned with price data
-                sentiment_df = sentiment_service.get_sentiment_window(days=90, end_date=price_end_date)
+                sentiment_df = sentiment_service.get_sentiment_window(days=120, end_date=price_end_date)
                 
                 if sentiment_df is not None and not sentiment_df.empty:
                     logger.info(f"Loaded {len(sentiment_df)} days of sentiment data (up to {price_end_date.date()})")
