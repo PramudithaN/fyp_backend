@@ -1,6 +1,7 @@
 """
 Integration tests for the complete prediction pipeline.
 """
+
 import pytest
 from unittest.mock import patch, MagicMock
 import pandas as pd
@@ -10,43 +11,42 @@ from datetime import datetime, timedelta
 
 class TestPredictionPipeline:
     """End-to-end tests for prediction pipeline."""
-    
-    @patch('app.services.price_fetcher.fetch_latest_prices')
-    @patch('app.services.sentiment_service.sentiment_service.get_sentiment_window')
-    @patch('app.models.model_loader.model_artifacts')
+
+    @patch("app.services.price_fetcher.fetch_latest_prices")
+    @patch("app.services.sentiment_service.sentiment_service.get_sentiment_window")
+    @patch("app.models.model_loader.model_artifacts")
     def test_complete_prediction_pipeline(
-        self, 
-        mock_artifacts, 
-        mock_sentiment, 
-        mock_prices
+        self, mock_artifacts, mock_sentiment, mock_prices
     ):
         """Test complete prediction pipeline from data fetch to forecast."""
         # Mock price data
-        dates = pd.date_range(end=datetime.now(), periods=30, freq='D')
-        mock_prices.return_value = pd.DataFrame({
-            'date': dates,
-            'price': np.random.uniform(70, 90, size=30)
-        })
-        
+        dates = pd.date_range(end=datetime.now(), periods=30, freq="D")
+        mock_prices.return_value = pd.DataFrame(
+            {"date": dates, "price": np.random.uniform(70, 90, size=30)}
+        )
+
         # Mock sentiment data
-        mock_sentiment.return_value = pd.DataFrame({
-            'date': dates,
-            'daily_sentiment': np.random.uniform(-0.5, 0.5, size=30),
-            'news_volume': np.random.randint(5, 20, size=30),
-            'log_news_volume': np.random.uniform(1.5, 3.0, size=30),
-            'decayed_news_volume': np.random.uniform(5, 15, size=30),
-            'high_news_regime': np.random.randint(0, 2, size=30)
-        })
-        
+        mock_sentiment.return_value = pd.DataFrame(
+            {
+                "date": dates,
+                "daily_sentiment": np.random.uniform(-0.5, 0.5, size=30),
+                "news_volume": np.random.randint(5, 20, size=30),
+                "log_news_volume": np.random.uniform(1.5, 3.0, size=30),
+                "decayed_news_volume": np.random.uniform(5, 15, size=30),
+                "high_news_regime": np.random.randint(0, 2, size=30),
+            }
+        )
+
         # Mock model artifacts
         mock_artifacts._loaded = True
         mock_artifacts.lookback = 30
         mock_artifacts.horizon = 14
-        
+
         # Test will attempt full pipeline
         # May fail without real models, but tests the structure
         try:
             from app.services.prediction import prediction_service
+
             result = prediction_service.predict(days_of_history=30)
         except Exception as e:
             # Expected without real models
@@ -55,40 +55,36 @@ class TestPredictionPipeline:
 
 class TestAPIIntegration:
     """Integration tests for API endpoints."""
-    
-    @patch('app.main.prediction_service.predict')
-    @patch('app.main.fetch_latest_prices')
+
+    @patch("app.main.prediction_service.predict")
+    @patch("app.main.fetch_latest_prices")
     def test_predict_endpoint_integration(
-        self,
-        mock_fetch,
-        mock_predict,
-        test_client,
-        sample_prices_df
+        self, mock_fetch, mock_predict, test_client, sample_prices_df
     ):
         """Test /predict endpoint integration."""
         # Mock price fetch
         mock_fetch.return_value = sample_prices_df
-        
+
         # Mock prediction
         mock_forecasts = [
             {
-                "date": (datetime.now() + timedelta(days=i)).strftime('%Y-%m-%d'),
+                "date": (datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d"),
                 "forecasted_price": 75.0 + i * 0.5,
                 "forecasted_return": 0.001,
-                "horizon": i
+                "horizon": i,
             }
             for i in range(1, 15)
         ]
         mock_predict.return_value = mock_forecasts
-        
+
         # Make request
         response = test_client.get("/predict")
-        
+
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
         assert len(data["forecasts"]) == 14
-        
+
         # Verify forecast structure
         for i, forecast in enumerate(data["forecasts"], 1):
             assert "date" in forecast
@@ -96,22 +92,18 @@ class TestAPIIntegration:
             assert "forecasted_return" in forecast
             assert "horizon" in forecast
             assert forecast["horizon"] == i
-    
-    @patch('app.main.fetch_latest_prices')
-    @patch('app.main.get_last_n_trading_days')
+
+    @patch("app.main.fetch_latest_prices")
+    @patch("app.main.get_last_n_trading_days")
     def test_prices_endpoint_integration(
-        self,
-        mock_get_days,
-        mock_fetch,
-        test_client,
-        sample_prices_df
+        self, mock_get_days, mock_fetch, test_client, sample_prices_df
     ):
         """Test /prices endpoint integration."""
         mock_fetch.return_value = sample_prices_df
         mock_get_days.return_value = sample_prices_df
-        
+
         response = test_client.get("/prices")
-        
+
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
@@ -121,46 +113,61 @@ class TestAPIIntegration:
 
 class TestDataFlow:
     """Tests for data flow through the system."""
-    
+
     def test_price_to_features_flow(self, sample_prices_df):
         """Test data flow from prices to features."""
         from app.services.feature_engineering import engineer_all_features
-        
+
         # Create minimal sentiment data
-        sentiment_df = pd.DataFrame({
-            'date': sample_prices_df['date'],
-            'daily_sentiment': np.random.uniform(-0.5, 0.5, size=len(sample_prices_df)),
-            'news_volume': np.random.randint(5, 20, size=len(sample_prices_df)),
-            'log_news_volume': np.random.uniform(1.5, 3.0, size=len(sample_prices_df)),
-            'decayed_news_volume': np.random.uniform(5, 15, size=len(sample_prices_df)),
-            'high_news_regime': np.random.randint(0, 2, size=len(sample_prices_df))
-        })
-        
-        features = engineer_all_features(
-            prices=sample_prices_df,
-            sentiment_df=sentiment_df
+        sentiment_df = pd.DataFrame(
+            {
+                "date": sample_prices_df["date"],
+                "daily_sentiment": np.random.uniform(
+                    -0.5, 0.5, size=len(sample_prices_df)
+                ),
+                "news_volume": np.random.randint(5, 20, size=len(sample_prices_df)),
+                "log_news_volume": np.random.uniform(
+                    1.5, 3.0, size=len(sample_prices_df)
+                ),
+                "decayed_news_volume": np.random.uniform(
+                    5, 15, size=len(sample_prices_df)
+                ),
+                "high_news_regime": np.random.randint(0, 2, size=len(sample_prices_df)),
+            }
         )
-        
+
+        features = engineer_all_features(
+            prices=sample_prices_df, sentiment_df=sentiment_df
+        )
+
         assert features is not None
         assert isinstance(features, pd.DataFrame)
         assert len(features) > 0
-    
+
     def test_sentiment_to_features_flow(self, sample_sentiment_df):
         """Test data flow from sentiment to features."""
         from app.services.sentiment_service import sentiment_service
-        
+
         # Add required columns
-        sample_sentiment_df['daily_sentiment_decay'] = sample_sentiment_df['sentiment']
-        sample_sentiment_df['log_news_volume'] = np.log(sample_sentiment_df['article_count'] + 1)
-        sample_sentiment_df['decayed_news_volume'] = sample_sentiment_df['article_count']
-        sample_sentiment_df['high_news_regime'] = 0
-        sample_sentiment_df.rename(columns={'article_count': 'news_volume'}, inplace=True)
-        sample_sentiment_df.rename(columns={'sentiment': 'daily_sentiment'}, inplace=True)
-        
+        sample_sentiment_df["daily_sentiment_decay"] = sample_sentiment_df["sentiment"]
+        sample_sentiment_df["log_news_volume"] = np.log(
+            sample_sentiment_df["article_count"] + 1
+        )
+        sample_sentiment_df["decayed_news_volume"] = sample_sentiment_df[
+            "article_count"
+        ]
+        sample_sentiment_df["high_news_regime"] = 0
+        sample_sentiment_df.rename(
+            columns={"article_count": "news_volume"}, inplace=True
+        )
+        sample_sentiment_df.rename(
+            columns={"sentiment": "daily_sentiment"}, inplace=True
+        )
+
         # Compute decay
         decayed = sentiment_service.apply_cross_day_decay(sample_sentiment_df)
-        assert 'daily_sentiment_decay' in decayed.columns
-        
+        assert "daily_sentiment_decay" in decayed.columns
+
         # Compute features
         result = sentiment_service.compute_sentiment_features(decayed)
         assert isinstance(result, pd.DataFrame)
@@ -168,59 +175,55 @@ class TestDataFlow:
 
 class TestErrorHandling:
     """Tests for error handling."""
-    
-    @patch('app.main.fetch_latest_prices')
+
+    @patch("app.main.fetch_latest_prices")
     def test_price_fetch_error_handling(self, mock_fetch, test_client):
         """Test error handling when price fetch fails."""
         mock_fetch.side_effect = Exception("API Error")
-        
+
         response = test_client.get("/prices")
         assert response.status_code == 500
-    
-    @patch('app.main.prediction_service.predict')
+
+    @patch("app.main.prediction_service.predict")
     def test_prediction_error_handling(self, mock_predict, test_client):
         """Test error handling when prediction fails."""
         mock_predict.side_effect = Exception("Model Error")
-        
+
         response = test_client.get("/predict")
         assert response.status_code == 500
-    
+
     def test_invalid_date_format(self, test_client):
         """Test handling of invalid date format."""
         from pydantic import ValidationError
         from app.schemas.prediction import PriceInput
-        
+
         with pytest.raises(ValidationError):
             PriceInput(date="invalid-date", price=75.0)
 
 
 class TestConcurrency:
     """Tests for concurrent requests."""
-    
-    @patch('app.main.prediction_service.predict')
-    @patch('app.main.fetch_latest_prices')
+
+    @patch("app.main.prediction_service.predict")
+    @patch("app.main.fetch_latest_prices")
     def test_concurrent_predict_requests(
-        self,
-        mock_fetch,
-        mock_predict,
-        test_client,
-        sample_prices_df
+        self, mock_fetch, mock_predict, test_client, sample_prices_df
     ):
         """Test handling multiple concurrent prediction requests."""
         mock_fetch.return_value = sample_prices_df
         mock_predict.return_value = [
             {
-                "date": (datetime.now() + timedelta(days=i)).strftime('%Y-%m-%d'),
+                "date": (datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d"),
                 "forecasted_price": 75.0,
                 "forecasted_return": 0.001,
-                "horizon": i
+                "horizon": i,
             }
             for i in range(1, 15)
         ]
-        
+
         # Make multiple requests
         responses = [test_client.get("/predict") for _ in range(3)]
-        
+
         # All should succeed
         for response in responses:
             assert response.status_code == 200

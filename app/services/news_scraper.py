@@ -12,6 +12,7 @@ Each scraper returns articles in the same dict format as NewsAPI:
 
 so the downstream compute_sentiment_features() pipeline works unchanged.
 """
+
 import logging
 import re
 from datetime import datetime, timedelta
@@ -44,7 +45,10 @@ HEADERS = {
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _fetch_page(url: str, timeout: int = DEFAULT_TIMEOUT, extra_headers: dict = None) -> Optional[BeautifulSoup]:
+
+def _fetch_page(
+    url: str, timeout: int = DEFAULT_TIMEOUT, extra_headers: dict = None
+) -> Optional[BeautifulSoup]:
     """Fetch a page and return parsed BeautifulSoup, with retries."""
     headers = {**HEADERS}
     if extra_headers:
@@ -67,11 +71,11 @@ def _parse_date_flexible(text: str) -> Optional[datetime]:
     """Try multiple date formats to parse a date string."""
     text = text.strip()
     formats = [
-        "%b %d, %Y at %H:%M",   # "Mar 02, 2026 at 03:39"
-        "%b %d, %Y",            # "Mar 02, 2026"
-        "%B %d, %Y",            # "March 2, 2026"
-        "%Y-%m-%d",             # "2026-03-02"
-        "%Y-%m-%dT%H:%M:%S%z", # ISO with timezone
+        "%b %d, %Y at %H:%M",  # "Mar 02, 2026 at 03:39"
+        "%b %d, %Y",  # "Mar 02, 2026"
+        "%B %d, %Y",  # "March 2, 2026"
+        "%Y-%m-%d",  # "2026-03-02"
+        "%Y-%m-%dT%H:%M:%S%z",  # ISO with timezone
     ]
     for fmt in formats:
         try:
@@ -88,7 +92,9 @@ def _matches_target_date(article_date: Optional[datetime], target_date: str) -> 
     return article_date.strftime("%Y-%m-%d") == target_date
 
 
-def _dedup_articles(articles: List[Dict[str, Any]], threshold: float = 0.85) -> List[Dict[str, Any]]:
+def _dedup_articles(
+    articles: List[Dict[str, Any]], threshold: float = 0.85
+) -> List[Dict[str, Any]]:
     """Remove near-duplicate articles by title similarity."""
     if not articles:
         return articles
@@ -115,6 +121,7 @@ def _dedup_articles(articles: List[Dict[str, Any]], threshold: float = 0.85) -> 
 # Internal: parse articles from a single page of each site
 # (These are the building blocks; the public API adds pagination on top.)
 # ---------------------------------------------------------------------------
+
 
 def _parse_oilprice_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
     """Parse article cards from a single OilPrice.com listing page."""
@@ -143,14 +150,16 @@ def _parse_oilprice_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
             excerpt_el = card.select_one("p.categoryArticle__excerpt")
             description = excerpt_el.get_text(strip=True) if excerpt_el else ""
 
-            articles.append({
-                "title": title,
-                "description": description,
-                "publishedAt": article_date.isoformat() if article_date else "",
-                "source": {"name": "OilPrice.com"},
-                "url": article_url,
-                "_parsed_date": article_date,
-            })
+            articles.append(
+                {
+                    "title": title,
+                    "description": description,
+                    "publishedAt": article_date.isoformat() if article_date else "",
+                    "source": {"name": "OilPrice.com"},
+                    "url": article_url,
+                    "_parsed_date": article_date,
+                }
+            )
         except Exception as e:
             logger.debug(f"Error parsing OilPrice article: {e}")
     return articles
@@ -182,14 +191,16 @@ def _parse_boereport_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
                     a_tag.decompose()
                 description = content_el.get_text(strip=True)
 
-            articles.append({
-                "title": title,
-                "description": description,
-                "publishedAt": article_date.isoformat() if article_date else "",
-                "source": {"name": "BOE Report"},
-                "url": article_url,
-                "_parsed_date": article_date,
-            })
+            articles.append(
+                {
+                    "title": title,
+                    "description": description,
+                    "publishedAt": article_date.isoformat() if article_date else "",
+                    "source": {"name": "BOE Report"},
+                    "url": article_url,
+                    "_parsed_date": article_date,
+                }
+            )
         except Exception as e:
             logger.debug(f"Error parsing BOE Report article: {e}")
     return articles
@@ -225,16 +236,20 @@ def _parse_ft_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
                 if parent:
                     date_header = parent.find_previous("time", class_="o-date")
                     if date_header:
-                        article_date = _parse_date_flexible(date_header.get_text(strip=True))
+                        article_date = _parse_date_flexible(
+                            date_header.get_text(strip=True)
+                        )
 
-            articles.append({
-                "title": title,
-                "description": description,
-                "publishedAt": article_date.isoformat() if article_date else "",
-                "source": {"name": "Financial Times"},
-                "url": article_url,
-                "_parsed_date": article_date,
-            })
+            articles.append(
+                {
+                    "title": title,
+                    "description": description,
+                    "publishedAt": article_date.isoformat() if article_date else "",
+                    "source": {"name": "Financial Times"},
+                    "url": article_url,
+                    "_parsed_date": article_date,
+                }
+            )
         except Exception as e:
             logger.debug(f"Error parsing FT article: {e}")
     return articles
@@ -260,14 +275,16 @@ def _parse_economynext_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
             desc_el = card.select_one("div.top-story-desc p, div.top-story-desc-2 p")
             description = desc_el.get_text(strip=True) if desc_el else ""
 
-            articles.append({
-                "title": title,
-                "description": description,
-                "publishedAt": article_date.isoformat() if article_date else "",
-                "source": {"name": "EconomyNext"},
-                "url": article_url,
-                "_parsed_date": article_date,
-            })
+            articles.append(
+                {
+                    "title": title,
+                    "description": description,
+                    "publishedAt": article_date.isoformat() if article_date else "",
+                    "source": {"name": "EconomyNext"},
+                    "url": article_url,
+                    "_parsed_date": article_date,
+                }
+            )
         except Exception as e:
             logger.debug(f"Error parsing EconomyNext article: {e}")
     return articles
@@ -277,10 +294,11 @@ def _parse_economynext_page(soup: BeautifulSoup) -> List[Dict[str, Any]]:
 # Paginated scrapers — crawl multiple pages to reach older articles
 # ---------------------------------------------------------------------------
 
+
 def _scrape_paginated(
     site_name: str,
-    base_url_fn,            # callable(page_num) -> url string
-    parse_fn,               # callable(soup) -> list of raw article dicts
+    base_url_fn,  # callable(page_num) -> url string
+    parse_fn,  # callable(soup) -> list of raw article dicts
     target_date: str,
     max_pages: int = 10,
 ) -> List[Dict[str, Any]]:
@@ -316,20 +334,26 @@ def _scrape_paginated(
                     page_matched += 1
                     all_older = False
                 elif pd.date() > target_dt.date():
-                    all_older = False   # still in the future relative to target
+                    all_older = False  # still in the future relative to target
             else:
                 # Can't determine date — include it
                 art["publishedAt"] = target_date
                 matched.append(art)
                 all_older = False
 
-        logger.debug(f"{site_name} page {page_num}: {page_matched} matched, {len(raw)} total")
+        logger.debug(
+            f"{site_name} page {page_num}: {page_matched} matched, {len(raw)} total"
+        )
 
         if all_older:
-            logger.debug(f"{site_name} page {page_num}: all articles older than {target_date}, stopping")
+            logger.debug(
+                f"{site_name} page {page_num}: all articles older than {target_date}, stopping"
+            )
             break
 
-    logger.info(f"{site_name}: found {len(matched)} articles for {target_date} (paginated)")
+    logger.info(
+        f"{site_name}: found {len(matched)} articles for {target_date} (paginated)"
+    )
     return matched
 
 
@@ -339,8 +363,8 @@ def scrape_oilprice(target_date: str, max_pages: int = 1) -> List[Dict[str, Any]
         site_name="OilPrice.com",
         base_url_fn=lambda p: (
             "https://oilprice.com/Latest-Energy-News/World-News/"
-            if p == 1 else
-            f"https://oilprice.com/Latest-Energy-News/World-News/Page-{p}.html"
+            if p == 1
+            else f"https://oilprice.com/Latest-Energy-News/World-News/Page-{p}.html"
         ),
         parse_fn=_parse_oilprice_page,
         target_date=target_date,
@@ -354,8 +378,8 @@ def scrape_economynext(target_date: str, max_pages: int = 1) -> List[Dict[str, A
         site_name="EconomyNext",
         base_url_fn=lambda p: (
             "https://economynext.com/petroleum/"
-            if p == 1 else
-            f"https://economynext.com/petroleum/page/{p}/"
+            if p == 1
+            else f"https://economynext.com/petroleum/page/{p}/"
         ),
         parse_fn=_parse_economynext_page,
         target_date=target_date,
@@ -369,8 +393,8 @@ def scrape_boereport(target_date: str, max_pages: int = 1) -> List[Dict[str, Any
         site_name="BOE Report",
         base_url_fn=lambda p: (
             "https://boereport.com/category/oil-and-gas-news-headlines/"
-            if p == 1 else
-            f"https://boereport.com/category/oil-and-gas-news-headlines/page/{p}/"
+            if p == 1
+            else f"https://boereport.com/category/oil-and-gas-news-headlines/page/{p}/"
         ),
         parse_fn=_parse_boereport_page,
         target_date=target_date,
@@ -401,7 +425,9 @@ SCRAPERS = [
 ]
 
 
-def scrape_all_sources(target_date: str = None, max_pages: int = 1) -> List[Dict[str, Any]]:
+def scrape_all_sources(
+    target_date: str = None, max_pages: int = 1
+) -> List[Dict[str, Any]]:
     """
     Run all scrapers for a given date with pagination and return deduplicated articles.
 
@@ -418,15 +444,16 @@ def scrape_all_sources(target_date: str = None, max_pages: int = 1) -> List[Dict
     if target_date is None:
         target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    logger.info(f"=== Scraping {target_date} (max_pages={max_pages}) across {len(SCRAPERS)} sources ===")
+    logger.info(
+        f"=== Scraping {target_date} (max_pages={max_pages}) across {len(SCRAPERS)} sources ==="
+    )
     t0 = _time.time()
 
     all_articles: List[Dict[str, Any]] = []
 
     with ThreadPoolExecutor(max_workers=len(SCRAPERS)) as pool:
         futures = {
-            pool.submit(fn, target_date, max_pages): name
-            for name, fn in SCRAPERS
+            pool.submit(fn, target_date, max_pages): name for name, fn in SCRAPERS
         }
         for future in as_completed(futures):
             name = futures[future]
@@ -437,13 +464,16 @@ def scrape_all_sources(target_date: str = None, max_pages: int = 1) -> List[Dict
 
     unique = _dedup_articles(all_articles)
     elapsed = _time.time() - t0
-    logger.info(f"=== {len(unique)} unique articles in {elapsed:.1f}s for {target_date} ===")
+    logger.info(
+        f"=== {len(unique)} unique articles in {elapsed:.1f}s for {target_date} ==="
+    )
     return unique
 
 
 # ---------------------------------------------------------------------------
 # Multi-day backfill — fill a range of dates (for the 30-day rolling window)
 # ---------------------------------------------------------------------------
+
 
 def scrape_all_sources_multiday(
     days_back: int = 30,
@@ -492,31 +522,50 @@ def scrape_all_sources_multiday(
                 break
             site_articles.extend(raw)
             # Check if the oldest article on this page is older than our window
-            dates_on_page = [a.get("_parsed_date") for a in raw if a.get("_parsed_date")]
+            dates_on_page = [
+                a.get("_parsed_date") for a in raw if a.get("_parsed_date")
+            ]
             if dates_on_page:
-                oldest = min(d.date() if hasattr(d, 'date') else d for d in dates_on_page)
+                oldest = min(
+                    d.date() if hasattr(d, "date") else d for d in dates_on_page
+                )
                 cutoff = today - timedelta(days=days_back + 2)
                 if oldest < cutoff:
-                    logger.debug(f"{site_name}: reached articles from {oldest}, stopping pagination")
+                    logger.debug(
+                        f"{site_name}: reached articles from {oldest}, stopping pagination"
+                    )
                     break
         return site_articles
 
     site_configs = [
-        ("OilPrice.com",
-         lambda p: "https://oilprice.com/Latest-Energy-News/World-News/" if p == 1
-         else f"https://oilprice.com/Latest-Energy-News/World-News/Page-{p}.html",
-         _parse_oilprice_page),
-        ("EconomyNext",
-         lambda p: "https://economynext.com/petroleum/" if p == 1
-         else f"https://economynext.com/petroleum/page/{p}/",
-         _parse_economynext_page),
-        ("BOE Report",
-         lambda p: "https://boereport.com/category/oil-and-gas-news-headlines/" if p == 1
-         else f"https://boereport.com/category/oil-and-gas-news-headlines/page/{p}/",
-         _parse_boereport_page),
-        ("FT.com",
-         lambda p: f"https://www.ft.com/oil?page={p}",
-         _parse_ft_page),
+        (
+            "OilPrice.com",
+            lambda p: (
+                "https://oilprice.com/Latest-Energy-News/World-News/"
+                if p == 1
+                else f"https://oilprice.com/Latest-Energy-News/World-News/Page-{p}.html"
+            ),
+            _parse_oilprice_page,
+        ),
+        (
+            "EconomyNext",
+            lambda p: (
+                "https://economynext.com/petroleum/"
+                if p == 1
+                else f"https://economynext.com/petroleum/page/{p}/"
+            ),
+            _parse_economynext_page,
+        ),
+        (
+            "BOE Report",
+            lambda p: (
+                "https://boereport.com/category/oil-and-gas-news-headlines/"
+                if p == 1
+                else f"https://boereport.com/category/oil-and-gas-news-headlines/page/{p}/"
+            ),
+            _parse_boereport_page,
+        ),
+        ("FT.com", lambda p: f"https://www.ft.com/oil?page={p}", _parse_ft_page),
     ]
 
     with ThreadPoolExecutor(max_workers=4) as pool:
@@ -529,7 +578,9 @@ def scrape_all_sources_multiday(
             try:
                 site_articles = future.result()
                 all_raw.extend(site_articles)
-                logger.info(f"Backfill {name}: collected {len(site_articles)} raw articles")
+                logger.info(
+                    f"Backfill {name}: collected {len(site_articles)} raw articles"
+                )
             except Exception as e:
                 logger.error(f"Backfill {name} failed: {e}")
 
@@ -585,5 +636,9 @@ if __name__ == "__main__":
         print(f"    Date: {art['publishedAt']}")
         print(f"    URL:  {art['url']}")
         if art.get("description"):
-            desc = art["description"][:120] + "..." if len(art.get("description", "")) > 120 else art["description"]
+            desc = (
+                art["description"][:120] + "..."
+                if len(art.get("description", "")) > 120
+                else art["description"]
+            )
             print(f"    Desc: {desc}")

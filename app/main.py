@@ -10,6 +10,7 @@ Endpoints:
 - POST /sentiment/bulk  - Bulk upload sentiment
 - GET  /sentiment       - View sentiment history
 """
+
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -19,8 +20,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import (
-    API_TITLE, API_DESCRIPTION, API_VERSION, BRENT_TICKER,
-    SCRAPER_ENABLED, SCRAPER_SCHEDULE_HOUR, SCRAPER_SCHEDULE_MINUTE
+    API_TITLE,
+    API_DESCRIPTION,
+    API_VERSION,
+    BRENT_TICKER,
+    SCRAPER_ENABLED,
+    SCRAPER_SCHEDULE_HOUR,
+    SCRAPER_SCHEDULE_MINUTE,
 )
 from app.models.model_loader import model_artifacts
 from app.database import init_database
@@ -28,8 +34,11 @@ from app.services.price_fetcher import fetch_latest_prices, get_last_n_trading_d
 from app.services.prediction import prediction_service
 from app.services.sentiment_service import sentiment_service
 from app.services.scraper_scheduler import (
-    start_scheduler, stop_scheduler, get_scheduler_status,
-    run_scraper_now, backfill_history
+    start_scheduler,
+    stop_scheduler,
+    get_scheduler_status,
+    run_scraper_now,
+    backfill_history,
 )
 from app.schemas.prediction import (
     PredictionRequest,
@@ -40,13 +49,12 @@ from app.schemas.prediction import (
     SentimentInput,
     BulkSentimentRequest,
     SentimentAddResponse,
-    SentimentHistoryResponse
+    SentimentHistoryResponse,
 )
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -59,24 +67,22 @@ async def lifespan(app: FastAPI):
         # Initialize sentiment database
         init_database()
         logger.info("Sentiment database initialized!")
-        
+
         # Load ML models
         model_artifacts.load_all()
         logger.info("Models loaded successfully!")
-        
+
         # Pre-load FinBERT sentiment model (eliminates cold-start on first request)
         try:
             from app.services.finbert_analyzer import preload_model
+
             preload_model()
         except Exception as e:
             logger.warning(f"FinBERT preload skipped: {e}")
-        
+
         # Start daily news scraper scheduler
         if SCRAPER_ENABLED:
-            start_scheduler(
-                hour=SCRAPER_SCHEDULE_HOUR,
-                minute=SCRAPER_SCHEDULE_MINUTE
-            )
+            start_scheduler(hour=SCRAPER_SCHEDULE_HOUR, minute=SCRAPER_SCHEDULE_MINUTE)
             logger.info("News scraper scheduler started!")
     except Exception as e:
         logger.error(f"Failed to start: {e}")
@@ -90,10 +96,7 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title=API_TITLE,
-    description=API_DESCRIPTION,
-    version=API_VERSION,
-    lifespan=lifespan
+    title=API_TITLE, description=API_DESCRIPTION, version=API_VERSION, lifespan=lifespan
 )
 
 # Add CORS middleware
@@ -113,7 +116,7 @@ async def root():
         "message": "Oil Price Prediction API",
         "docs": "/docs",
         "health": "/health",
-        "predict": "/predict"
+        "predict": "/predict",
     }
 
 
@@ -124,7 +127,7 @@ async def health_check():
         status="healthy",
         models_loaded=model_artifacts._loaded,
         timestamp=datetime.now().isoformat(),
-        version=API_VERSION
+        version=API_VERSION,
     )
 
 
@@ -133,30 +136,30 @@ async def health_check():
     response_model=PriceDataResponse,
     responses={
         500: {"model": ErrorResponse, "description": "Server error fetching prices"}
-    }
+    },
 )
 async def get_prices():
     """
     Fetch and display current Brent oil price data.
-    
+
     Returns the last 30 trading days of prices from Yahoo Finance.
     """
     try:
         # Fetch prices
         all_prices = fetch_latest_prices(lookback_days=60)
         prices = get_last_n_trading_days(all_prices, n=30)
-        
+
         return PriceDataResponse(
             success=True,
             ticker=BRENT_TICKER,
             data_points=len(prices),
             date_range={
-                "start": str(prices['date'].iloc[0]),
-                "end": str(prices['date'].iloc[-1])
+                "start": str(prices["date"].iloc[0]),
+                "end": str(prices["date"].iloc[-1]),
             },
-            prices=prices.to_dict(orient='records')
+            prices=prices.to_dict(orient="records"),
         )
-    
+
     except Exception as e:
         logger.error(f"Error fetching prices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -166,14 +169,17 @@ async def get_prices():
     "/predict",
     response_model=PredictionResponse,
     responses={
-        400: {"model": ErrorResponse, "description": "Invalid input or validation error"},
-        500: {"model": ErrorResponse, "description": "Server error during prediction"}
-    }
+        400: {
+            "model": ErrorResponse,
+            "description": "Invalid input or validation error",
+        },
+        500: {"model": ErrorResponse, "description": "Server error during prediction"},
+    },
 )
 async def predict_now():
     """
     Generate a 14-day forecast based on real-time data.
-    
+
     This endpoint:
     1. Fetches current Brent oil prices from Yahoo Finance.
     2. Automatically gathers missing news sentiments for the last 30 days.
@@ -183,21 +189,22 @@ async def predict_now():
     try:
         # Generate predictions using the automated end-to-end service
         forecasts = prediction_service.predict(days_of_history=30)
-        
+
         # Get latest price for response metadata
         from app.services.price_fetcher import fetch_latest_prices
+
         latest_prices = fetch_latest_prices(lookback_days=5)
-        last_price = float(latest_prices['price'].iloc[-1])
-        last_date = str(latest_prices['date'].iloc[-1].date())
-        
+        last_price = float(latest_prices["price"].iloc[-1])
+        last_date = str(latest_prices["date"].iloc[-1].date())
+
         return PredictionResponse(
             success=True,
             data_source=f"Yahoo Finance ({BRENT_TICKER})",
             last_price_date=last_date,
             last_price=round(last_price, 2),
-            forecasts=forecasts
+            forecasts=forecasts,
         )
-    
+
     except ValueError as e:
         logger.error(f"Validation error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
@@ -214,7 +221,7 @@ async def predict_now():
 async def model_info():
     """Get information about the loaded models and system status."""
     sent_info = sentiment_service.get_latest_info()
-    
+
     return {
         "lookback": model_artifacts.lookback,
         "horizon": model_artifacts.horizon,
@@ -224,15 +231,15 @@ async def model_info():
         "sentiment_data": {
             "total_records": sent_info["total_records"],
             "latest_date": sent_info["latest_date"],
-            "integration_status": "DISABLED (Price-Only Mode)"
+            "integration_status": "DISABLED (Price-Only Mode)",
         },
         "components": {
             "arima": "Trend forecasting",
             "mid_gru": "Mid-frequency pattern recognition",
             "sent_gru": "Sentiment-aware prediction",
             "xgb_hf": "High-frequency noise modeling",
-            "meta_ensemble": "Ridge regression combination"
-        }
+            "meta_ensemble": "Ridge regression combination",
+        },
     }
 
 
@@ -242,7 +249,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": API_VERSION
+        "version": API_VERSION,
     }
 
 
@@ -255,8 +262,11 @@ async def scraper_status():
 @app.post(
     "/scraper/run",
     responses={
-        500: {"model": ErrorResponse, "description": "Server error during scraper execution"}
-    }
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error during scraper execution",
+        }
+    },
 )
 async def scraper_run(target_date: str = None):
     """
@@ -276,8 +286,11 @@ async def scraper_run(target_date: str = None):
 @app.post(
     "/scraper/backfill",
     responses={
-        500: {"model": ErrorResponse, "description": "Server error during backfill operation"}
-    }
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error during backfill operation",
+        }
+    },
 )
 async def scraper_backfill(days_back: int = 30, max_pages: int = 15):
     """
@@ -301,6 +314,5 @@ async def scraper_backfill(days_back: int = 30, max_pages: int = 15):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="127.0.0.1", port=8000)
-
-

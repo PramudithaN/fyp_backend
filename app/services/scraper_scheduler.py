@@ -9,6 +9,7 @@ Uses APScheduler to run the scraper pipeline once per day:
 
 Can also be triggered manually via run_scraper_now().
 """
+
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
@@ -78,7 +79,9 @@ def _run_daily_scrape(target_date: str = None) -> Dict[str, Any]:
             )
         else:
             # Step 2b: No articles → apply sentiment decay
-            logger.warning(f"[Scheduler] No articles found for {target_date}, applying sentiment decay")
+            logger.warning(
+                f"[Scheduler] No articles found for {target_date}, applying sentiment decay"
+            )
             decay_result = sentiment_service.apply_no_news_decay(target_date)
             result["decay_applied"] = True
             result["sentiment_value"] = decay_result.get("decayed_sentiment", 0.0)
@@ -89,7 +92,9 @@ def _run_daily_scrape(target_date: str = None) -> Dict[str, Any]:
         result["status"] = "success"
 
     except Exception as e:
-        logger.error(f"[Scheduler] Scrape pipeline failed for {target_date}: {e}", exc_info=True)
+        logger.error(
+            f"[Scheduler] Scrape pipeline failed for {target_date}: {e}", exc_info=True
+        )
         result["status"] = "error"
         result["error"] = str(e)
 
@@ -114,40 +119,40 @@ def run_scraper_now(target_date: str = None) -> Dict[str, Any]:
 def _check_existing_dates(all_dates: List[str]) -> set:
     """
     Check which dates already have sentiment data.
-    
+
     Args:
         all_dates: List of date strings to check
-    
+
     Returns:
         Set of date strings that already exist in database
     """
     from app.database import get_sentiment_for_dates
     import pandas as pd
-    
+
     if not all_dates:
         return set()
-    
+
     existing_df = get_sentiment_for_dates(all_dates[0], all_dates[-1])
     if existing_df.empty:
         return set()
-    
-    return set(pd.to_datetime(existing_df['date']).dt.strftime("%Y-%m-%d"))
+
+    return set(pd.to_datetime(existing_df["date"]).dt.strftime("%Y-%m-%d"))
 
 
 def _process_date_with_articles(date_str: str, articles: List[Dict]) -> Dict[str, Any]:
     """
     Process a date that has articles by computing sentiment.
-    
+
     Args:
         date_str: Date string (YYYY-MM-DD)
         articles: List of article dictionaries
-    
+
     Returns:
         Result dictionary with status and sentiment info
     """
     from app.services.news_fetcher import compute_sentiment_features
     from app.services.sentiment_service import sentiment_service
-    
+
     try:
         features = compute_sentiment_features(articles)
         sentiment_service.add_daily_sentiment(
@@ -171,15 +176,15 @@ def _process_date_with_articles(date_str: str, articles: List[Dict]) -> Dict[str
 def _process_date_without_articles(date_str: str) -> Dict[str, Any]:
     """
     Process a date with no articles by applying sentiment decay.
-    
+
     Args:
         date_str: Date string (YYYY-MM-DD)
-    
+
     Returns:
         Result dictionary with status and sentiment info
     """
     from app.services.sentiment_service import sentiment_service
-    
+
     try:
         decay_result = sentiment_service.apply_no_news_decay(date_str)
         return {
@@ -191,17 +196,17 @@ def _process_date_without_articles(date_str: str) -> Dict[str, Any]:
         return {"status": "error", "error": str(e)}
 
 
-def _compute_backfill_summary(per_date_results: Dict[str, Dict], 
-                             started_at: str, 
-                             days_back: int) -> Dict[str, Any]:
+def _compute_backfill_summary(
+    per_date_results: Dict[str, Dict], started_at: str, days_back: int
+) -> Dict[str, Any]:
     """
     Compute summary statistics for backfill operation.
-    
+
     Args:
         per_date_results: Dictionary of per-date results
         started_at: ISO timestamp when backfill started
         days_back: Number of days that were backfilled
-    
+
     Returns:
         Summary dictionary
     """
@@ -209,7 +214,7 @@ def _compute_backfill_summary(per_date_results: Dict[str, Dict],
     decayed = sum(1 for v in per_date_results.values() if v["status"] == "decayed")
     skipped = sum(1 for v in per_date_results.values() if v["status"] == "skipped")
     errors = sum(1 for v in per_date_results.values() if v["status"] == "error")
-    
+
     return {
         "started_at": started_at,
         "completed_at": datetime.now().isoformat(),
@@ -222,7 +227,9 @@ def _compute_backfill_summary(per_date_results: Dict[str, Dict],
     }
 
 
-def backfill_history(days_back: int = 30, max_pages_per_site: int = 15) -> Dict[str, Any]:
+def backfill_history(
+    days_back: int = 30, max_pages_per_site: int = 15
+) -> Dict[str, Any]:
     """
     Backfill the last N days of sentiment history by paginating through
     site archives. Designed to be called once after fresh deployment.
@@ -243,7 +250,9 @@ def backfill_history(days_back: int = 30, max_pages_per_site: int = 15) -> Dict[
     """
     from app.services.news_scraper import scrape_all_sources_multiday
 
-    logger.info(f"[Backfill] Starting {days_back}-day backfill (max {max_pages_per_site} pages/site)")
+    logger.info(
+        f"[Backfill] Starting {days_back}-day backfill (max {max_pages_per_site} pages/site)"
+    )
     started_at = datetime.now().isoformat()
 
     # Step 1: Bulk-scrape articles across all pages/sites
@@ -255,7 +264,10 @@ def backfill_history(days_back: int = 30, max_pages_per_site: int = 15) -> Dict[
     # Step 2: Build the full list of target dates (chronological order)
     today = datetime.now().date()
     all_dates = sorted(
-        [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days_back, 0, -1)]
+        [
+            (today - timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range(days_back, 0, -1)
+        ]
     )
 
     # Step 3: Check which dates already have data
@@ -265,7 +277,10 @@ def backfill_history(days_back: int = 30, max_pages_per_site: int = 15) -> Dict[
     per_date_results = {}
     for date_str in all_dates:
         if date_str in existing_dates:
-            per_date_results[date_str] = {"status": "skipped", "reason": "already_exists"}
+            per_date_results[date_str] = {
+                "status": "skipped",
+                "reason": "already_exists",
+            }
             continue
 
         articles = articles_by_date.get(date_str, [])
@@ -336,4 +351,3 @@ def stop_scheduler() -> None:
         _scheduler.shutdown(wait=False)
         logger.info("[Scheduler] Stopped")
     _scheduler = None
-
