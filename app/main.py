@@ -14,9 +14,10 @@ Endpoints:
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Annotated
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import (
@@ -279,20 +280,27 @@ async def scraper_run(target_date: str = None):
         result = run_scraper_now(target_date=target_date)
         return result
     except Exception as e:
-        logger.error(f"Manual scraper run failed: {e}")
+        logger.error("Manual scraper run failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post(
     "/scraper/backfill",
     responses={
+        400: {
+            "model": ErrorResponse,
+            "description": "Invalid input parameters",
+        },
         500: {
             "model": ErrorResponse,
             "description": "Server error during backfill operation",
-        }
+        },
     },
 )
-async def scraper_backfill(days_back: int = 30, max_pages: int = 15):
+async def scraper_backfill(
+    days_back: Annotated[int, Query(ge=1, le=365)] = 30,
+    max_pages: Annotated[int, Query(ge=1, le=50)] = 15,
+):
     """
     Backfill the sentiment database for the last N days.
 
@@ -308,7 +316,7 @@ async def scraper_backfill(days_back: int = 30, max_pages: int = 15):
         result = backfill_history(days_back=days_back, max_pages_per_site=max_pages)
         return result
     except Exception as e:
-        logger.error(f"Backfill failed: {e}")
+        logger.error("Backfill failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
