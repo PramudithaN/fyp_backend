@@ -298,8 +298,8 @@ async def scraper_run(target_date: str = None):
     },
 )
 async def scraper_backfill(
-    days_back: Annotated[int, Query(30, ge=1, le=365)],
-    max_pages: Annotated[int, Query(15, ge=1, le=50)],
+    days_back: Annotated[int, Query(ge=1, le=365)] = 30,
+    max_pages: Annotated[int, Query(ge=1, le=50)] = 15,
 ):
     """
     Backfill the sentiment database for the last N days.
