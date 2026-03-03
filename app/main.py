@@ -188,7 +188,7 @@ async def predict_now():
     """
     try:
         # Generate predictions using the automated end-to-end service
-        forecasts = prediction_service.predict(days_of_history=30)
+        forecasts = prediction_service.predict()
 
         # Get latest price for response metadata
         from app.services.price_fetcher import fetch_latest_prices

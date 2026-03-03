@@ -48,7 +48,7 @@ class TestPredictionPipeline:
         try:
             from app.services.prediction import prediction_service
 
-            prediction_service.predict(days_of_history=30)
+            prediction_service.predict()
         except Exception:
             # Expected without real models
             pass

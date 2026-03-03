@@ -146,7 +146,7 @@ class TestPredictionService:
         service = PredictionService()
         # This will fail without all models loaded, but we test the flow
         try:
-            service.predict(days_of_history=30)
+            service.predict()
         except Exception:
             # Expected to fail without real models
             pass
