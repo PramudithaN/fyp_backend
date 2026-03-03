@@ -2,13 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies and create non-root user
 RUN apt-get update && apt-get install -y \
     build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create non-root user
-RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system appgroup \
+    && adduser --system --ingroup appgroup appuser
 
 # Copy requirements first for better caching
 COPY requirements.txt .
