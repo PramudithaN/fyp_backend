@@ -301,8 +301,6 @@ def backfill_history(
 
 def get_scheduler_status() -> Dict[str, Any]:
     """Return the current scheduler status and last run info."""
-    global _scheduler, _last_run
-
     running = _scheduler is not None and _scheduler.running
     next_run = None
     if running:
