@@ -43,7 +43,7 @@ def _run_daily_scrape(target_date: str = None) -> Dict[str, Any]:
     if target_date is None:
         target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    logger.info(f"[Scheduler] Starting daily scrape for {target_date}")
+    logger.info("[Scheduler] Starting daily scrape")
     result = {
         "date": target_date,
         "started_at": datetime.now().isoformat(),
@@ -74,26 +74,27 @@ def _run_daily_scrape(target_date: str = None) -> Dict[str, Any]:
                 high_news_regime=features["high_news_regime"],
             )
             logger.info(
-                f"[Scheduler] Stored sentiment for {target_date}: "
-                f"{features['daily_sentiment_decay']:.4f} from {len(articles)} articles"
+                "[Scheduler] Stored sentiment: %.4f from %d articles",
+                features['daily_sentiment_decay'], len(articles)
             )
         else:
             # Step 2b: No articles → apply sentiment decay
             logger.warning(
-                f"[Scheduler] No articles found for {target_date}, applying sentiment decay"
+                "[Scheduler] No articles found, applying sentiment decay"
             )
             decay_result = sentiment_service.apply_no_news_decay(target_date)
             result["decay_applied"] = True
             result["sentiment_value"] = decay_result.get("decayed_sentiment", 0.0)
             logger.info(
-                f"[Scheduler] Applied decay for {target_date}: {result['sentiment_value']:.4f}"
+                "[Scheduler] Applied decay: %.4f",
+                result['sentiment_value']
             )
 
         result["status"] = "success"
 
     except Exception as e:
         logger.error(
-            f"[Scheduler] Scrape pipeline failed for {target_date}: {e}", exc_info=True
+            "[Scheduler] Scrape pipeline failed", exc_info=True
         )
         result["status"] = "error"
         result["error"] = str(e)
@@ -169,7 +170,7 @@ def _process_date_with_articles(date_str: str, articles: List[Dict]) -> Dict[str
             "sentiment": features["daily_sentiment_decay"],
         }
     except Exception as e:
-        logger.error(f"[Backfill] Failed to process {date_str}: {e}")
+        logger.error("[Backfill] Failed to process date", exc_info=True)
         return {"status": "error", "error": str(e)}
 
 
@@ -192,7 +193,7 @@ def _process_date_without_articles(date_str: str) -> Dict[str, Any]:
             "sentiment": decay_result.get("decayed_sentiment", 0.0),
         }
     except Exception as e:
-        logger.error(f"[Backfill] Decay failed for {date_str}: {e}")
+        logger.error("[Backfill] Decay failed", exc_info=True)
         return {"status": "error", "error": str(e)}
 
 
@@ -251,7 +252,8 @@ def backfill_history(
     from app.services.news_scraper import scrape_all_sources_multiday
 
     logger.info(
-        f"[Backfill] Starting {days_back}-day backfill (max {max_pages_per_site} pages/site)"
+        "[Backfill] Starting backfill: %d days, max %d pages/site",
+        days_back, max_pages_per_site
     )
     started_at = datetime.now().isoformat()
 
@@ -293,8 +295,9 @@ def backfill_history(
     summary = _compute_backfill_summary(per_date_results, started_at, days_back)
 
     logger.info(
-        f"[Backfill] Complete: {summary['days_filled']} filled, {summary['days_decayed']} decayed, "
-        f"{summary['days_skipped']} skipped, {summary['days_errored']} errors"
+        "[Backfill] Complete: %d filled, %d decayed, %d skipped, %d errors",
+        summary['days_filled'], summary['days_decayed'],
+        summary['days_skipped'], summary['days_errored']
     )
     return summary
 
@@ -339,7 +342,7 @@ def start_scheduler(hour: int = 6, minute: int = 0) -> None:
         replace_existing=True,
     )
     _scheduler.start()
-    logger.info(f"[Scheduler] Started — daily scrape at {hour:02d}:{minute:02d} UTC")
+    logger.info("[Scheduler] Started — daily scrape at %02d:%02d UTC", hour, minute)
 
 
 def stop_scheduler() -> None:
