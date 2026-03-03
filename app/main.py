@@ -263,21 +263,39 @@ async def scraper_status():
 @app.post(
     "/scraper/run",
     responses={
+        400: {
+            "model": ErrorResponse,
+            "description": "Invalid date format",
+        },
         500: {
             "model": ErrorResponse,
             "description": "Server error during scraper execution",
-        }
+        },
     },
 )
-async def scraper_run(target_date: str = None):
+async def scraper_run(
+    target_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None
+):
     """
     Manually trigger a news scraping run.
 
     Args:
         target_date: Optional YYYY-MM-DD date to scrape. Defaults to yesterday.
     """
+    # Validate date format and value if provided
+    validated_date = None
+    if target_date is not None:
+        try:
+            datetime.strptime(target_date, "%Y-%m-%d")
+            validated_date = target_date
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid date format. Expected YYYY-MM-DD"
+            )
+    
     try:
-        result = run_scraper_now(target_date=target_date)
+        result = run_scraper_now(target_date=validated_date)
         return result
     except Exception as e:
         logger.error("Manual scraper run failed", exc_info=True)
