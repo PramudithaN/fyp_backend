@@ -312,8 +312,13 @@ async def scraper_backfill(
         days_back: Number of days to backfill (default 30).
         max_pages: Max pages to crawl per site (default 15).
     """
+    capped_days_back = min(days_back, 365)
+    capped_max_pages = min(max_pages, 50)
+
     try:
-        result = backfill_history(days_back=days_back, max_pages_per_site=max_pages)
+        result = backfill_history(
+            days_back=capped_days_back, max_pages_per_site=capped_max_pages
+        )
         return result
     except Exception as e:
         logger.error("Backfill failed", exc_info=True)

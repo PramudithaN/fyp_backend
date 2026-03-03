@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # Shared HTTP config
 DEFAULT_TIMEOUT = 30
 MAX_RETRIES = 2
+MAX_PAGES_LIMIT = 50
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -368,7 +369,9 @@ def _scrape_paginated(
     target_dt = datetime.strptime(target_date, "%Y-%m-%d")
     matched: List[Dict[str, Any]] = []
 
-    for page_num in range(1, max_pages + 1):
+    capped_max_pages = max(1, min(max_pages, MAX_PAGES_LIMIT))
+
+    for page_num in range(1, capped_max_pages + 1):
         url = base_url_fn(page_num)
         soup = _fetch_page(url)
         if soup is None:
@@ -525,10 +528,14 @@ def scrape_all_sources(
 # ---------------------------------------------------------------------------
 
 
-def _crawl_site_pages(site_name: str, base_url_fn, parse_fn, max_pages: int, cutoff_date) -> List[Dict[str, Any]]:
+def _crawl_site_pages(
+    site_name: str, base_url_fn, parse_fn, max_pages: int, cutoff_date
+) -> List[Dict[str, Any]]:
     """Crawl multiple pages from a single site, returning all articles."""
     site_articles = []
-    for pg in range(1, max_pages + 1):
+    capped_max_pages = max(1, min(max_pages, MAX_PAGES_LIMIT))
+
+    for pg in range(1, capped_max_pages + 1):
         url = base_url_fn(pg)
         soup = _fetch_page(url)
         if soup is None:
