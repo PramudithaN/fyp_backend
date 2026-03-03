@@ -20,11 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ app/
 COPY model_artifacts/ model_artifacts/
 
-# Create directory for database if needed
-RUN mkdir -p /app/data
-
-# Ensure app directory is owned by non-root user
-RUN chown -R appuser:appgroup /app
+# Create directory for database if needed and ensure ownership
+RUN mkdir -p /app/data \
+    && chown -R appuser:appgroup /app
 
 # Run as non-root user
 USER appuser
