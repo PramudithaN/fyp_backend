@@ -78,15 +78,15 @@ async def lifespan(app: FastAPI):
             from app.services.finbert_analyzer import preload_model
 
             preload_model()
-        except Exception as e:
-            logger.warning(f"FinBERT preload skipped: {e}")
+        except Exception:
+            logger.warning("FinBERT preload skipped", exc_info=True)
 
         # Start daily news scraper scheduler
         if SCRAPER_ENABLED:
             start_scheduler(hour=SCRAPER_SCHEDULE_HOUR, minute=SCRAPER_SCHEDULE_MINUTE)
             logger.info("News scraper scheduler started!")
-    except Exception as e:
-        logger.error(f"Failed to start: {e}")
+    except Exception:
+        logger.error("Failed to start", exc_info=True)
         raise
     yield
     # Shutdown
