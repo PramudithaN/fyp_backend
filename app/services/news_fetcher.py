@@ -240,14 +240,90 @@ def analyze_sentiment(text: str, mode: str = None) -> float:
         return analyze_sentiment_simple(text)
 
 
+def _extract_texts_from_articles(articles: List[Dict[str, Any]]) -> List[str]:
+    """Extract and combine text fields from articles for sentiment analysis."""
+    texts = []
+    for article in articles:
+        title = article.get("title", "") or ""
+        description = article.get("description", "") or ""
+        content = article.get("content", "") or ""
+        # Combine title + description (matching Colab)
+        text = f"{title}. {description}"
+        if content and len(content) > len(description):
+            text = f"{title}. {content}"
+        texts.append(text)
+    return texts
+
+
+def _analyze_with_finbert(texts: List[str]) -> Optional[List[float]]:
+    """
+    Attempt to analyze sentiments using FinBERT batch processing.
+    
+    Returns:
+        List of sentiment scores if successful, None if unavailable/failed.
+    """
+    try:
+        from app.services.finbert_analyzer import (
+            analyze_batch_finbert,
+            is_finbert_available,
+        )
+
+        if not is_finbert_available():
+            logger.warning("Custom FinBERT not available, using simple sentiment")
+            return None
+
+        import time
+        logger.info(f"Analyzing {len(texts)} articles with custom FinBERT...")
+        t_sent = time.time()
+        sentiments = analyze_batch_finbert(texts)
+        elapsed_sent = time.time() - t_sent
+        logger.info(
+            f"FinBERT analysis complete in {elapsed_sent:.1f}s. "
+            f"Mean sentiment: {np.mean(sentiments):.4f}"
+        )
+        return sentiments
+    except Exception as e:
+        logger.warning(f"FinBERT batch analysis failed: {e}, using simple sentiment")
+        return None
+
+
+def _analyze_with_simple_sentiment(articles: List[Dict[str, Any]]) -> List[float]:
+    """Fallback sentiment analysis using simple keyword-based method."""
+    sentiments = []
+    for article in articles:
+        title = article.get("title", "") or ""
+        description = article.get("description", "") or ""
+        text = f"{title} {description}"
+        sentiment = analyze_sentiment_simple(text)
+        sentiments.append(sentiment)
+    return sentiments
+
+
+def _compute_sentiment_dict(sentiments: List[float], news_volume: int) -> Dict[str, Any]:
+    """Compute sentiment feature dictionary from sentiment scores and volume."""
+    log_news_volume = math.log(news_volume + 1)
+    daily_sentiment = float(np.mean(sentiments)) if sentiments else 0.0
+    decayed_news_volume = float(news_volume) * 0.5  # Approximate
+    high_news_regime = 1 if news_volume > 30 else 0
+
+    logger.info(
+        f"Computed sentiment: {daily_sentiment:.4f} from {news_volume} articles"
+    )
+
+    return {
+        "daily_sentiment_decay": round(daily_sentiment, 6),
+        "news_volume": news_volume,
+        "log_news_volume": round(log_news_volume, 6),
+        "decayed_news_volume": round(decayed_news_volume, 6),
+        "high_news_regime": high_news_regime,
+    }
+
+
 def compute_sentiment_features(
     articles: List[Dict[str, Any]], sentiment_mode: str = None
 ) -> Dict[str, Any]:
     """
     Compute sentiment features from a list of articles.
-    
-    Note: This function has higher complexity due to multiple sentiment modes,
-    date handling, validation logic, and feature computation steps.
 
     IMPORTANT: This matches Colab training preprocessing exactly:
     - daily_sentiment: Simple mean of all article sentiments (NO within-day decay!)
@@ -266,8 +342,6 @@ def compute_sentiment_features(
     Returns:
         Dictionary with sentiment features
     """
-    import time
-
     if not articles:
         return {
             "daily_sentiment_decay": 0.0,
@@ -277,88 +351,27 @@ def compute_sentiment_features(
             "high_news_regime": 0,
         }
 
-    # Collect all article sentiments
-    all_sentiments = []
-
-    # Check if we should use FinBERT batch processing
+    # Determine which sentiment analysis mode to use
     use_finbert = (
         (sentiment_mode == "finbert")
         if sentiment_mode
         else (SENTIMENT_MODE == "finbert")
     )
 
+    # Extract texts from articles
+    texts = _extract_texts_from_articles(articles)
+
+    # Try FinBERT if requested
+    all_sentiments = None
     if use_finbert:
-        try:
-            from app.services.finbert_analyzer import (
-                analyze_batch_finbert,
-                is_finbert_available,
-            )
+        all_sentiments = _analyze_with_finbert(texts)
 
-            if is_finbert_available():
-                # Prepare texts for batch processing
-                texts = []
-                for article in articles:
-                    title = article.get("title", "") or ""
-                    description = article.get("description", "") or ""
-                    content = article.get("content", "") or ""
-                    # Combine title + description (matching Colab)
-                    text = f"{title}. {description}"
-                    if content and len(content) > len(description):
-                        text = f"{title}. {content}"
-                    texts.append(text)
+    # Fallback to simple sentiment if needed
+    if not all_sentiments:
+        all_sentiments = _analyze_with_simple_sentiment(articles)
 
-                logger.info(f"Analyzing {len(texts)} articles with custom FinBERT...")
-                t_sent = time.time()
-                all_sentiments = analyze_batch_finbert(texts)
-                elapsed_sent = time.time() - t_sent
-                logger.info(
-                    f"FinBERT analysis complete in {elapsed_sent:.1f}s. "
-                    f"Mean sentiment: {np.mean(all_sentiments):.4f}"
-                )
-            else:
-                logger.warning("Custom FinBERT not available, using simple sentiment")
-                use_finbert = False
-        except Exception as e:
-            logger.warning(
-                f"FinBERT batch analysis failed: {e}, using simple sentiment"
-            )
-            use_finbert = False
-
-    # Fallback to simple sentiment
-    if not use_finbert or not all_sentiments:
-        for article in articles:
-            title = article.get("title", "") or ""
-            description = article.get("description", "") or ""
-            text = f"{title} {description}"
-            sentiment = analyze_sentiment_simple(text)
-            all_sentiments.append(sentiment)
-
-    # Compute features
-    news_volume = len(articles)
-    log_news_volume = math.log(news_volume + 1)
-
-    # CRITICAL: Simple mean - matching Colab training exactly!
-    # Colab code: daily_sentiment = df.groupby('date')['sentiment'].mean()
-    daily_sentiment = float(np.mean(all_sentiments)) if all_sentiments else 0.0
-
-    # Decayed volume (for feature compatibility, uses EWM-like approach)
-    # This is a single-day estimate; proper EWM needs history
-    decayed_news_volume = float(news_volume) * 0.5  # Approximate
-
-    # High news regime: flag if more than 30 articles
-    high_news_regime = 1 if news_volume > 30 else 0
-
-    logger.info(
-        f"Computed sentiment: {daily_sentiment:.4f} from {news_volume} articles"
-    )
-
-    return {
-        "daily_sentiment_decay": round(daily_sentiment, 6),
-        "news_volume": news_volume,
-        "log_news_volume": round(log_news_volume, 6),
-        "decayed_news_volume": round(decayed_news_volume, 6),
-        "high_news_regime": high_news_regime,
-    }
+    # Compute and return features
+    return _compute_sentiment_dict(all_sentiments, len(articles))
 
 
 def fetch_oil_news_combined(

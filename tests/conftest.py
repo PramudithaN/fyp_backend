@@ -27,8 +27,9 @@ def test_client():
 @pytest.fixture
 def sample_prices_df():
     """Generate sample price data for testing."""
+    generator = np.random.default_rng(seed=42)
     dates = pd.date_range(end=datetime.now(), periods=30, freq="D")
-    prices = np.random.uniform(70, 90, size=30)
+    prices = generator.uniform(70, 90, size=30)
 
     return pd.DataFrame({"date": dates, "price": prices})
 
@@ -36,9 +37,10 @@ def sample_prices_df():
 @pytest.fixture
 def sample_prices_list():
     """Generate sample price list for POST requests."""
+    generator = np.random.default_rng(seed=43)
     dates = pd.date_range(end=datetime.now(), periods=30, freq="D")
     return [
-        {"date": date.strftime("%Y-%m-%d"), "price": float(np.random.uniform(70, 90))}
+        {"date": date.strftime("%Y-%m-%d"), "price": float(generator.uniform(70, 90))}
         for date in dates
     ]
 
@@ -46,14 +48,15 @@ def sample_prices_list():
 @pytest.fixture
 def sample_sentiment_df():
     """Generate sample sentiment data for testing."""
+    generator = np.random.default_rng(seed=44)
     dates = pd.date_range(end=datetime.now(), periods=30, freq="D")
-    sentiments = np.random.uniform(-0.5, 0.5, size=30)
+    sentiments = generator.uniform(-0.5, 0.5, size=30)
 
     return pd.DataFrame(
         {
             "date": dates,
             "sentiment": sentiments,
-            "article_count": np.random.randint(5, 20, size=30),
+            "article_count": generator.integers(5, 20, size=30),
         }
     )
 
@@ -70,6 +73,7 @@ def mock_model_artifacts(monkeypatch):
         device = "cpu"
 
         def load_all(self):
+            # Mock implementation - no-op for testing purposes
             pass
 
     from app.models import model_loader

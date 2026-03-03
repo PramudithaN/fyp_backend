@@ -11,8 +11,8 @@ echo -e "${YELLOW}=== Oil Price Prediction API Test Suite ===${NC}\n"
 
 # Check if pytest is installed
 if ! command -v pytest &> /dev/null; then
-    echo -e "${RED}Error: pytest is not installed${NC}"
-    echo "Install with: pip install -r requirements-dev.txt"
+    echo -e "${RED}Error: pytest is not installed${NC}" >&2
+    echo "Install with: pip install -r requirements-dev.txt" >&2
     exit 1
 fi
 
@@ -82,7 +82,7 @@ esac
 
 exit_code=$?
 
-if [ $exit_code -eq 0 ]; then
+if [[ $exit_code -eq 0 ]]; then
     echo -e "\n${GREEN}✓ All tests passed!${NC}"
 else
     echo -e "\n${RED}✗ Some tests failed${NC}"
