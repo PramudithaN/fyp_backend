@@ -142,7 +142,12 @@ class PredictionService:
     ) -> pd.DataFrame:
         """Engineer features and validate data quality."""
         df = engineer_all_features(prices, sentiment_df=sentiment_df)
-        df = df.dropna().tail(self.artifacts.lookback)
+        
+        # Forward-fill and backward-fill NaN values from lagged features and rolling calculations
+        df = df.ffill().bfill()
+        
+        # Take the last lookback rows to ensure we have enough data
+        df = df.tail(self.artifacts.lookback)
 
         if len(df) < self.artifacts.lookback:
             raise ValueError(
