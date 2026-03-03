@@ -46,8 +46,10 @@ def load_sentiment_model():
     try:
         from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-        _tokenizer = AutoTokenizer.from_pretrained(model_name)
-        _model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        # Pin to specific revision for security (commit hash from 2024-01-15)
+        revision = "9893c6e72d245a054f49c42172ccadf0e99774bb"
+        _tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
+        _model = AutoModelForSequenceClassification.from_pretrained(model_name, revision=revision)
 
         # Use GPU if available
         _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -110,7 +110,7 @@ class ModelArtifacts:
 
         # For mid-GRU, check the actual model weight dimensions
         mid_gru_path = MODEL_ARTIFACTS_DIR / "mid_gru.pt"
-        mid_state = torch.load(mid_gru_path, map_location="cpu")
+        mid_state = torch.load(mid_gru_path, map_location="cpu", weights_only=True)
         n_mid_features = mid_state["gru.weight_ih_l0"].shape[1]
 
         logger.info(
@@ -156,7 +156,7 @@ class ModelArtifacts:
 
         sent_gru_path = MODEL_ARTIFACTS_DIR / "sent_gru.pt"
         self.sent_gru.load_state_dict(
-            torch.load(sent_gru_path, map_location=self.device)
+            torch.load(sent_gru_path, map_location=self.device, weights_only=True)
         )
         self.sent_gru.eval()
         logger.info("Sentiment GRU loaded")
