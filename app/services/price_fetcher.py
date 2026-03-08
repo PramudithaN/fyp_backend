@@ -35,7 +35,8 @@ def fetch_latest_prices(
     logger.info(f"Fetching Brent oil prices (ticker: {BRENT_TICKER})")
 
     if end_date is None:
-        end_date = datetime.now()
+        # Use UTC to avoid local DST gaps (e.g., 02:xx on DST start)
+        end_date = datetime.utcnow()
 
     start_date = end_date - timedelta(days=lookback_days)
 
@@ -56,7 +57,11 @@ def fetch_latest_prices(
         if end_date.hour == 0 and end_date.minute == 0:  # heuristic for "date only"
             target_end = end_date + timedelta(days=1)
 
-        df = ticker.history(start=start_date, end=target_end)
+        # Pass date-only values to avoid timezone/DST localization issues
+        start_arg = start_date.date()
+        end_arg = target_end.date()
+
+        df = ticker.history(start=start_arg, end=end_arg)
 
         if df.empty:
             raise ValueError(f"No data returned for ticker {BRENT_TICKER}")
