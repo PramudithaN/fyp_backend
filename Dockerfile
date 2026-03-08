@@ -25,6 +25,8 @@ RUN mkdir -p /app/data \
 
 # Set environment variables
 ENV SKIP_FINBERT_PRELOAD=true
+ENV SCRAPER_ENABLED=false
+ENV SENTIMENT_MODE=simple
 
 # Run as non-root user
 USER appuser

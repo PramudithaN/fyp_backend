@@ -65,38 +65,57 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Load models and initialize database on startup."""
     logger.info("Starting application...")
+    
+    # Initialize sentiment database
     try:
-        # Initialize sentiment database
         init_database()
         logger.info("Sentiment database initialized!")
+    except Exception as e:
+        logger.error(f"Database initialization failed: {e}", exc_info=True)
+        # Continue - database can be created on first request
 
-        # Load ML models
+    # Load ML models
+    try:
         model_artifacts.load_all()
         logger.info("Models loaded successfully!")
+    except Exception as e:
+        logger.error(f"Model loading failed: {e}", exc_info=True)
+        # Continue - predictions will fail but app can still start
 
-        # Pre-load FinBERT sentiment model (eliminates cold-start on first request)
-        if not SKIP_FINBERT_PRELOAD:
-            try:
-                from app.services.finbert_analyzer import preload_model
+    # Pre-load FinBERT sentiment model (eliminates cold-start on first request)
+    if not SKIP_FINBERT_PRELOAD:
+        try:
+            from app.services.finbert_analyzer import preload_model
 
-                preload_model()
-            except Exception:
-                logger.warning("FinBERT preload failed - model will load on first request", exc_info=True)
-        else:
-            logger.info("FinBERT preload skipped (SKIP_FINBERT_PRELOAD=true)")
+            preload_model()
+            logger.info("FinBERT model pre-loaded successfully")
+        except Exception as e:
+            logger.warning(f"FinBERT preload failed: {e}", exc_info=True)
+            logger.info("FinBERT model will load on first request")
+    else:
+        logger.info("FinBERT preload skipped (SKIP_FINBERT_PRELOAD=true)")
 
-        # Start daily news scraper scheduler
-        if SCRAPER_ENABLED:
+    # Start daily news scraper scheduler
+    if SCRAPER_ENABLED:
+        try:
             start_scheduler(hour=SCRAPER_SCHEDULE_HOUR, minute=SCRAPER_SCHEDULE_MINUTE)
             logger.info("News scraper scheduler started!")
-    except Exception:
-        logger.error("Failed to start", exc_info=True)
-        raise
+        except Exception as e:
+            logger.warning(f"Scraper startup failed: {e}", exc_info=True)
+            logger.info("Scraper will not run - app continues")
+    else:
+        logger.info("News scraper disabled")
+        
+    logger.info("Application startup completed successfully")
+    
     yield
     # Shutdown
     if SCRAPER_ENABLED:
-        stop_scheduler()
-    logger.info("Shutting down application...")
+        try:
+            stop_scheduler()
+        except Exception:
+            pass
+    logger.info("Application shutting down...")
 
 
 # Create FastAPI app
