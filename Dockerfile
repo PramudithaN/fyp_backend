@@ -23,6 +23,9 @@ COPY model_artifacts/ model_artifacts/
 RUN mkdir -p /app/data \
     && chown -R appuser:appgroup /app
 
+# Set environment variables
+ENV SKIP_FINBERT_PRELOAD=true
+
 # Run as non-root user
 USER appuser
 
