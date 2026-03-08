@@ -7,3 +7,5 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
+      - key: SKIP_FINBERT_PRELOAD
+        value: "true"

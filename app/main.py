@@ -28,6 +28,7 @@ from app.config import (
     SCRAPER_ENABLED,
     SCRAPER_SCHEDULE_HOUR,
     SCRAPER_SCHEDULE_MINUTE,
+    SKIP_FINBERT_PRELOAD,
 )
 from app.models.model_loader import model_artifacts
 from app.database import init_database
@@ -74,12 +75,15 @@ async def lifespan(app: FastAPI):
         logger.info("Models loaded successfully!")
 
         # Pre-load FinBERT sentiment model (eliminates cold-start on first request)
-        try:
-            from app.services.finbert_analyzer import preload_model
+        if not SKIP_FINBERT_PRELOAD:
+            try:
+                from app.services.finbert_analyzer import preload_model
 
-            preload_model()
-        except Exception:
-            logger.warning("FinBERT preload skipped", exc_info=True)
+                preload_model()
+            except Exception:
+                logger.warning("FinBERT preload failed - model will load on first request", exc_info=True)
+        else:
+            logger.info("FinBERT preload skipped (SKIP_FINBERT_PRELOAD=true)")
 
         # Start daily news scraper scheduler
         if SCRAPER_ENABLED:

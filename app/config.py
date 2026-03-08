@@ -57,6 +57,9 @@ NEWSDATA_KEY = os.getenv("NEWSDATA_KEY", "")
 # Set to 'finbert' to use the custom ProsusAI/finbert model
 SENTIMENT_MODE = os.getenv("SENTIMENT_MODE", "finbert")
 
+# Skip FinBERT preloading (useful for deployments without HuggingFace access)
+SKIP_FINBERT_PRELOAD = os.getenv("SKIP_FINBERT_PRELOAD", "false").lower() == "true"
+
 # Web scraper configuration
 SCRAPER_ENABLED = os.getenv("SCRAPER_ENABLED", "true").lower() == "true"
 SCRAPER_SCHEDULE_HOUR = int(os.getenv("SCRAPER_SCHEDULE_HOUR", "6"))

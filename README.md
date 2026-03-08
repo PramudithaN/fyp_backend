@@ -36,6 +36,37 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+## Environment Variables
+
+Configure the application using environment variables (create a `.env` file):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEWSAPI_KEY` | - | NewsAPI.org API key for news fetching |
+| `NEWSDATA_KEY` | - | NewsData.io API key for news fetching |
+| `SENTIMENT_MODE` | `finbert` | Sentiment analysis mode: `simple` or `finbert` |
+| `SKIP_FINBERT_PRELOAD` | `false` | Skip FinBERT model preloading at startup (set to `true` for deployments without HuggingFace access) |
+| `SCRAPER_ENABLED` | `true` | Enable/disable the daily news scraper |
+| `SCRAPER_SCHEDULE_HOUR` | `6` | Hour (0-23) to run daily news scraper |
+| `SCRAPER_SCHEDULE_MINUTE` | `0` | Minute (0-59) to run daily news scraper |
+
+**Example `.env` file:**
+```env
+NEWSAPI_KEY=your_api_key_here
+NEWSDATA_KEY=your_api_key_here
+SENTIMENT_MODE=finbert
+SKIP_FINBERT_PRELOAD=false
+SCRAPER_ENABLED=true
+```
+
+### FinBERT Model Loading
+
+The FinBERT sentiment model is loaded from Hugging Face on first use. For deployments in restricted network environments:
+
+- Set `SKIP_FINBERT_PRELOAD=true` to skip model preloading during startup
+- The model will be loaded on the first sentiment analysis request instead
+- Ensure the deployment environment can access `huggingface.co` for model downloads
+
 ## API Endpoints
 
 | Endpoint   | Method | Description                   |

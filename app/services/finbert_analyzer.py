@@ -34,6 +34,9 @@ def load_sentiment_model():
 
     Returns:
         Tuple of (model, tokenizer, device)
+    
+    Raises:
+        Exception if model loading fails (network issues, missing dependencies, etc.)
     """
     global _model, _tokenizer, _device, _model_loaded
 
@@ -48,8 +51,18 @@ def load_sentiment_model():
 
         # Pin to specific revision for security (commit hash from 2024-01-15)
         revision = "9893c6e72d245a054f49c42172ccadf0e99774bb"
-        _tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
-        _model = AutoModelForSequenceClassification.from_pretrained(model_name, revision=revision)
+        
+        logger.info("Downloading model from Hugging Face (this may take a few minutes on first run)...")
+        _tokenizer = AutoTokenizer.from_pretrained(
+            model_name, 
+            revision=revision,
+            timeout=30  # 30 second timeout for network requests
+        )
+        _model = AutoModelForSequenceClassification.from_pretrained(
+            model_name, 
+            revision=revision,
+            timeout=30
+        )
 
         # Use GPU if available
         _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -62,7 +75,9 @@ def load_sentiment_model():
         return _model, _tokenizer, _device
 
     except Exception as e:
-        logger.error(f"Failed to load FinBERT model: {e}")
+        logger.error(f"Failed to load FinBERT model from Hugging Face: {e}")
+        logger.error("If this deployment has no internet access, set SKIP_FINBERT_PRELOAD=true")
+        logger.error("Model will be loaded on first prediction request instead")
         raise
 
 
