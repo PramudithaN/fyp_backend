@@ -51,10 +51,6 @@ def fetch_latest_prices(
         end_arg = end_date.date() + timedelta(days=1)
 
         df = ticker.history(start=start_arg, end=end_arg)
-        start_arg = start_date.date()
-        end_arg = target_end.date()
-
-        df = ticker.history(start=start_arg, end=end_arg)
 
         if df.empty:
             raise ValueError(f"No data returned for ticker {BRENT_TICKER}")
