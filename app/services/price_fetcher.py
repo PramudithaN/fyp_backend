@@ -36,28 +36,21 @@ def fetch_latest_prices(
 
     if end_date is None:
         # Use UTC to avoid local DST gaps (e.g., 02:xx on DST start)
-        end_date = datetime.utcnow()
+        end_date = datetime.now()
 
     start_date = end_date - timedelta(days=lookback_days)
 
     try:
         ticker = yf.Ticker(BRENT_TICKER)
-        # yfinance end date is exclusive, so if we want to include end_date, we might need to adjust
-        # However, usually 'history' fetches up to the end_date.
-        # If end_date is today, it gets today.
-        # Let's ensure consistency: if explicit end_date is passed (e.g. 2026-01-15),
-        # we usually want that to be the LAST day of data.
-        # yfinance download(end=...) is exclusive. history(end=...) is also exclusive.
-        # So if we want data FROM 2026-01-15, we should pass 2026-01-16 as end.
+        # yfinance history(end=...) is exclusive, so always pass end+1 day to
+        # include today's (or the requested end date's) closing price.
+        # Passing end=tomorrow also ensures yfinance never serves this request
+        # from its internal LRU cache (cache_get is only triggered when
+        # end_dt + 30min <= now, i.e. end is already in the past).
+        start_arg = start_date.date()
+        end_arg = end_date.date() + timedelta(days=1)
 
-        # If end_date was passed explicitly, add 1 day to include it
-        # If it's datetime.now(), it's fine.
-
-        target_end = end_date
-        if end_date.hour == 0 and end_date.minute == 0:  # heuristic for "date only"
-            target_end = end_date + timedelta(days=1)
-
-        # Pass date-only values to avoid timezone/DST localization issues
+        df = ticker.history(start=start_arg, end=end_arg)
         start_arg = start_date.date()
         end_arg = target_end.date()
 
