@@ -1,10 +1,11 @@
 """
-Database layer for sentiment storage using SQLite.
+Database layer for storing sentiment, prices, news articles, and predictions.
 
-NOTE: The database stores raw daily_sentiment (simple mean).
+NOTE: The sentiment_history table stores raw daily_sentiment (simple mean).
 Cross-day decay is applied at retrieval time by sentiment_service.py
 """
 
+import json
 import sqlite3
 from pathlib import Path
 from datetime import datetime, date
@@ -55,9 +56,53 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_sentiment_date ON sentiment_history(date)
     """)
 
+    # Create prices table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS prices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT UNIQUE NOT NULL,
+            price REAL NOT NULL,
+            source TEXT DEFAULT 'yahoo_finance',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_prices_date ON prices(date)
+    """)
+
+    # Create news_articles table (one row per article, with per-article sentiment)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS news_articles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_date TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            url TEXT UNIQUE,
+            source TEXT,
+            published_at TEXT,
+            sentiment_score REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_articles_date ON news_articles(article_date)
+    """)
+
+    # Create predictions table (stores each 14-day forecast run)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS predictions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            generated_at TEXT NOT NULL,
+            last_price_date TEXT NOT NULL,
+            last_price REAL NOT NULL,
+            forecasts TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
     conn.commit()
     conn.close()
-    logger.info("Sentiment database initialized successfully")
+    logger.info("Database initialized successfully (sentiment, prices, articles, predictions)")
 
 
 def add_sentiment(
@@ -282,3 +327,233 @@ def clear_sentiment_history() -> int:
 
     logger.info(f"Cleared {count} sentiment records")
     return count
+
+
+# ---------------------------------------------------------------------------
+# Price functions
+# ---------------------------------------------------------------------------
+
+
+def add_price(date_str: str, price: float, source: str = "yahoo_finance") -> bool:
+    """Insert or replace a single daily price record."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT OR REPLACE INTO prices (date, price, source) VALUES (?, ?, ?)",
+            (date_str, price, source),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Error adding price for {date_str}: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def add_bulk_prices(price_records: List[Dict[str, Any]]) -> int:
+    """
+    Insert or replace multiple price records.
+
+    Each record must have 'date' and 'price' keys.
+    Optional 'source' key (defaults to 'yahoo_finance').
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    count = 0
+    try:
+        for rec in price_records:
+            cursor.execute(
+                "INSERT OR REPLACE INTO prices (date, price, source) VALUES (?, ?, ?)",
+                (rec["date"], rec["price"], rec.get("source", "yahoo_finance")),
+            )
+            count += 1
+        conn.commit()
+        logger.info(f"Saved {count} price records")
+        return count
+    except Exception as e:
+        logger.error(f"Error in bulk add prices: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_prices(days: int = 90) -> pd.DataFrame:
+    """Return the most recent N days of stored price data."""
+    conn = get_connection()
+    df = pd.read_sql_query(
+        "SELECT date, price, source FROM prices ORDER BY date DESC LIMIT ?",
+        conn,
+        params=(days,),
+    )
+    conn.close()
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").reset_index(drop=True)
+    return df
+
+
+# ---------------------------------------------------------------------------
+# News article functions
+# ---------------------------------------------------------------------------
+
+
+def add_news_articles(article_date: str, articles: List[Dict[str, Any]]) -> int:
+    """
+    Store a list of news articles for a given date.
+
+    Each article dict should contain:
+        title, description, url, source, published_at, sentiment_score
+    Duplicate URLs are silently ignored (INSERT OR IGNORE).
+
+    Returns:
+        Number of new rows inserted.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    count = 0
+    try:
+        for art in articles:
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO news_articles
+                    (article_date, title, description, url, source, published_at, sentiment_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    article_date,
+                    art.get("title", ""),
+                    art.get("description", ""),
+                    art.get("url"),
+                    art.get("source", ""),
+                    art.get("published_at", ""),
+                    art.get("sentiment_score"),
+                ),
+            )
+            if cursor.rowcount:
+                count += 1
+        conn.commit()
+        logger.info(f"Saved {count} new articles for {article_date}")
+        return count
+    except Exception as e:
+        logger.error(f"Error saving articles for {article_date}: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_news_articles(article_date: str) -> List[Dict[str, Any]]:
+    """Return all stored articles for a specific date."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, article_date, title, description, url, source, published_at, sentiment_score, created_at
+        FROM news_articles WHERE article_date = ? ORDER BY id
+        """,
+        (article_date,),
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def get_recent_news_articles(days: int = 7) -> List[Dict[str, Any]]:
+    """Return articles from the most recent N distinct dates."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id, article_date, title, description, url, source, published_at, sentiment_score
+        FROM news_articles
+        WHERE article_date IN (
+            SELECT DISTINCT article_date FROM news_articles ORDER BY article_date DESC LIMIT ?
+        )
+        ORDER BY article_date DESC, id
+        """,
+        (days,),
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Prediction functions
+# ---------------------------------------------------------------------------
+
+
+def add_prediction(
+    generated_at: str,
+    last_price_date: str,
+    last_price: float,
+    forecasts: List[Dict[str, Any]],
+) -> int:
+    """
+    Persist a 14-day forecast run.
+
+    Args:
+        generated_at: ISO timestamp of when the prediction was made.
+        last_price_date: Date string of the last known price used.
+        last_price: Last known price value.
+        forecasts: List of ForecastDay dicts (serialized as JSON).
+
+    Returns:
+        Row id of the inserted record.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO predictions (generated_at, last_price_date, last_price, forecasts)
+            VALUES (?, ?, ?, ?)
+            """,
+            (generated_at, last_price_date, last_price, json.dumps(forecasts)),
+        )
+        row_id = cursor.lastrowid
+        conn.commit()
+        logger.info(f"Saved prediction run id={row_id} generated_at={generated_at}")
+        return row_id
+    except Exception as e:
+        logger.error(f"Error saving prediction: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_latest_prediction() -> Optional[Dict[str, Any]]:
+    """Return the most recently stored prediction run."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM predictions ORDER BY id DESC LIMIT 1"
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        result = dict(row)
+        result["forecasts"] = json.loads(result["forecasts"])
+        return result
+    return None
+
+
+def get_prediction_history(limit: int = 10) -> List[Dict[str, Any]]:
+    """Return the last N prediction runs (most recent first)."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM predictions ORDER BY id DESC LIMIT ?", (limit,)
+    )
+    rows = []
+    for row in cursor.fetchall():
+        rec = dict(row)
+        rec["forecasts"] = json.loads(rec["forecasts"])
+        rows.append(rec)
+    conn.close()
+    return rows

@@ -29,7 +29,7 @@ from app.config import (
     SCRAPER_API_KEY,
 )
 from app.models.model_loader import model_artifacts
-from app.database import init_database
+from app.database import init_database, add_bulk_prices, add_prediction
 from app.services.price_fetcher import fetch_latest_prices, get_last_n_trading_days
 from app.services.prediction import prediction_service
 from app.services.sentiment_service import sentiment_service
@@ -199,6 +199,27 @@ async def predict_now():
         latest_prices = fetch_latest_prices(lookback_days=5)
         last_price = float(latest_prices["price"].iloc[-1])
         last_date = str(latest_prices["date"].iloc[-1].date())
+
+        # Persist prices to DB (upsert last 5 trading days)
+        try:
+            price_records = [
+                {"date": str(row["date"].date()), "price": float(row["price"])}
+                for _, row in latest_prices.iterrows()
+            ]
+            add_bulk_prices(price_records)
+        except Exception as db_err:
+            logger.warning(f"Failed to persist prices: {db_err}")
+
+        # Persist the forecast run to DB
+        try:
+            add_prediction(
+                generated_at=datetime.now().isoformat(),
+                last_price_date=last_date,
+                last_price=round(last_price, 2),
+                forecasts=[f.model_dump() if hasattr(f, "model_dump") else f for f in forecasts],
+            )
+        except Exception as db_err:
+            logger.warning(f"Failed to persist prediction: {db_err}")
 
         return PredictionResponse(
             success=True,

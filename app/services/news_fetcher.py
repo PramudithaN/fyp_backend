@@ -15,7 +15,7 @@ import math
 import numpy as np
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from app.config import NEWSAPI_KEY as CONFIG_NEWSAPI_KEY, SENTIMENT_MODE
 
@@ -374,7 +374,63 @@ def compute_sentiment_features(
     return _compute_sentiment_dict(all_sentiments, len(articles))
 
 
-def fetch_oil_news_combined(
+
+def compute_sentiment_features_with_articles(
+    articles: List[Dict[str, Any]], sentiment_mode: str = None
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    Same as compute_sentiment_features but also returns per-article details.
+
+    Returns:
+        (features_dict, enriched_articles)
+        where each item in enriched_articles is the original article dict with
+        an additional 'sentiment_score' key.
+    """
+    if not articles:
+        return (
+            {
+                "daily_sentiment_decay": 0.0,
+                "news_volume": 0,
+                "log_news_volume": 0.0,
+                "decayed_news_volume": 0.0,
+                "high_news_regime": 0,
+            },
+            [],
+        )
+
+    use_finbert = (
+        (sentiment_mode == "finbert") if sentiment_mode else (SENTIMENT_MODE == "finbert")
+    )
+
+    texts = _extract_texts_from_articles(articles)
+
+    all_sentiments = None
+    if use_finbert:
+        all_sentiments = _analyze_with_finbert(texts)
+    if not all_sentiments:
+        all_sentiments = _analyze_with_simple_sentiment(articles)
+
+    enriched = []
+    for article, score in zip(articles, all_sentiments):
+        enriched.append(
+            {
+                "title": article.get("title", ""),
+                "description": article.get("description", ""),
+                "url": article.get("url"),
+                "source": (
+                    article["source"]["name"]
+                    if isinstance(article.get("source"), dict)
+                    else str(article.get("source", ""))
+                ),
+                "published_at": article.get("publishedAt", ""),
+                "sentiment_score": round(float(score), 6),
+            }
+        )
+
+    return _compute_sentiment_dict(all_sentiments, len(articles)), enriched
+
+
+
     date: str = None, api_key: str = None, page_size: int = 100
 ) -> List[Dict[str, Any]]:
     """

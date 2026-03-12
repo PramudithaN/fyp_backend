@@ -33,8 +33,9 @@ def _run_daily_scrape(target_date: str = None) -> Dict[str, Any]:
     global _last_run
 
     from app.services.news_scraper import scrape_all_sources
-    from app.services.news_fetcher import compute_sentiment_features
+    from app.services.news_fetcher import compute_sentiment_features_with_articles
     from app.services.sentiment_service import sentiment_service
+    from app.database import add_news_articles
 
     if target_date is None:
         target_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -56,11 +57,14 @@ def _run_daily_scrape(target_date: str = None) -> Dict[str, Any]:
         result["articles_found"] = len(articles)
 
         if articles:
-            # Step 2: Compute sentiment from scraped articles
-            features = compute_sentiment_features(articles)
+            # Step 2: Compute sentiment from scraped articles (also get per-article details)
+            features, enriched_articles = compute_sentiment_features_with_articles(articles)
             result["sentiment_value"] = features["daily_sentiment_decay"]
 
-            # Step 3: Store in database
+            # Step 3a: Store per-article data in database
+            add_news_articles(target_date, enriched_articles)
+
+            # Step 3b: Store aggregated sentiment in database
             sentiment_service.add_daily_sentiment(
                 date_str=target_date,
                 daily_sentiment=features["daily_sentiment_decay"],
