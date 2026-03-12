@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Annotated
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import (
@@ -25,10 +25,8 @@ from app.config import (
     API_DESCRIPTION,
     API_VERSION,
     BRENT_TICKER,
-    SCRAPER_ENABLED,
-    SCRAPER_SCHEDULE_HOUR,
-    SCRAPER_SCHEDULE_MINUTE,
     SKIP_FINBERT_PRELOAD,
+    SCRAPER_API_KEY,
 )
 from app.models.model_loader import model_artifacts
 from app.database import init_database
@@ -36,8 +34,6 @@ from app.services.price_fetcher import fetch_latest_prices, get_last_n_trading_d
 from app.services.prediction import prediction_service
 from app.services.sentiment_service import sentiment_service
 from app.services.scraper_scheduler import (
-    start_scheduler,
-    stop_scheduler,
     get_scheduler_status,
     run_scraper_now,
     backfill_history,
@@ -95,26 +91,9 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("FinBERT preload skipped (SKIP_FINBERT_PRELOAD=true)")
 
-    # Start daily news scraper scheduler
-    if SCRAPER_ENABLED:
-        try:
-            start_scheduler(hour=SCRAPER_SCHEDULE_HOUR, minute=SCRAPER_SCHEDULE_MINUTE)
-            logger.info("News scraper scheduler started!")
-        except Exception as e:
-            logger.warning(f"Scraper startup failed: {e}", exc_info=True)
-            logger.info("Scraper will not run - app continues")
-    else:
-        logger.info("News scraper disabled")
-        
     logger.info("Application startup completed successfully")
-    
+
     yield
-    # Shutdown
-    if SCRAPER_ENABLED:
-        try:
-            stop_scheduler()
-        except Exception:
-            pass
     logger.info("Application shutting down...")
 
 
@@ -290,6 +269,10 @@ async def scraper_status():
             "model": ErrorResponse,
             "description": "Invalid date format",
         },
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid X-Scraper-Key header",
+        },
         500: {
             "model": ErrorResponse,
             "description": "Server error during scraper execution",
@@ -297,14 +280,19 @@ async def scraper_status():
     },
 )
 async def scraper_run(
-    target_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None
+    target_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    x_scraper_key: Annotated[str | None, Header()] = None,
 ):
     """
     Manually trigger a news scraping run.
 
+    Protected by X-Scraper-Key header when SCRAPER_API_KEY env var is set.
+
     Args:
         target_date: Optional YYYY-MM-DD date to scrape. Defaults to yesterday.
     """
+    if SCRAPER_API_KEY and x_scraper_key != SCRAPER_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Scraper-Key header")
     # Validate date format and value if provided
     validated_date = None
     if target_date is not None:

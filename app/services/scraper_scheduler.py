@@ -14,13 +14,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-
 logger = logging.getLogger(__name__)
 
-# Global scheduler instance
-_scheduler: Optional[BackgroundScheduler] = None
 _last_run: Optional[Dict[str, Any]] = None
 
 
@@ -303,52 +298,9 @@ def backfill_history(
 
 
 def get_scheduler_status() -> Dict[str, Any]:
-    """Return the current scheduler status and last run info."""
-    running = _scheduler is not None and _scheduler.running
-    next_run = None
-    if running:
-        jobs = _scheduler.get_jobs()
-        if jobs:
-            next_run = str(jobs[0].next_run_time)
-
+    """Return the cron-based scheduler status and last run info."""
     return {
-        "scheduler_running": running,
-        "next_run": next_run,
+        "scheduler_mode": "render_cron",
+        "schedule": "daily at 02:00 UTC (via Render Cron Job)",
         "last_run": _last_run,
     }
-
-
-def start_scheduler(hour: int = 6, minute: int = 0) -> None:
-    """
-    Start the background scheduler to run the scraper daily.
-
-    Args:
-        hour: Hour to run (UTC). Default: 6.
-        minute: Minute to run. Default: 0.
-    """
-    global _scheduler
-
-    if _scheduler is not None and _scheduler.running:
-        logger.warning("[Scheduler] Already running, skipping start")
-        return
-
-    _scheduler = BackgroundScheduler(daemon=True)
-    trigger = CronTrigger(hour=hour, minute=minute)
-    _scheduler.add_job(
-        _run_daily_scrape,
-        trigger=trigger,
-        id="daily_news_scrape",
-        name="Daily Oil News Scraper",
-        replace_existing=True,
-    )
-    _scheduler.start()
-    logger.info("[Scheduler] Started — daily scrape at %02d:%02d UTC", hour, minute)
-
-
-def stop_scheduler() -> None:
-    """Stop the background scheduler."""
-    global _scheduler
-    if _scheduler and _scheduler.running:
-        _scheduler.shutdown(wait=False)
-        logger.info("[Scheduler] Stopped")
-    _scheduler = None

@@ -53,6 +53,10 @@ API_VERSION = "1.0.0"
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 NEWSDATA_KEY = os.getenv("NEWSDATA_KEY", "")
 
+# Scraper API key — protects /scraper/run from unauthorized calls
+# Set this in Render env vars and as SCRAPER_API_KEY GitHub secret
+SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
+
 # Sentiment analysis mode: 'simple' or 'finbert'
 # Set to 'finbert' to use the custom ProsusAI/finbert model
 SENTIMENT_MODE = os.getenv("SENTIMENT_MODE", "finbert")

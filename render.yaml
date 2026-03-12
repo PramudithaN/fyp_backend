@@ -9,3 +9,5 @@ services:
         value: "3.11"
       - key: SKIP_FINBERT_PRELOAD
         value: "true"
+      - key: SCRAPER_API_KEY
+        sync: false
