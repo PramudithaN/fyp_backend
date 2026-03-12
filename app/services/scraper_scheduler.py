@@ -1,13 +1,14 @@
 """
-Automated daily scheduler for news scraping and sentiment computation.
+News scraping and sentiment pipeline.
 
-Uses APScheduler to run the scraper pipeline once per day:
+The daily scrape is triggered externally (GitHub Actions cron → POST /scraper/run).
+Can also be triggered manually via the API or run_scraper_now().
+
+Pipeline per run:
 1. Scrape articles from all configured sources
 2. Compute sentiment features via FinBERT
 3. Store results in the SQLite database
 4. Apply sentiment decay if no articles found
-
-Can also be triggered manually via run_scraper_now().
 """
 
 import logging

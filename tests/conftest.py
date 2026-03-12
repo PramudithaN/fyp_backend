@@ -19,8 +19,6 @@ from app.main import app
 @pytest.fixture(scope="session")
 def test_client():
     """Create a test client for the FastAPI app."""
-    # Disable scheduler during tests
-    os.environ["SCRAPER_ENABLED"] = "false"
     return TestClient(app)
 
 
