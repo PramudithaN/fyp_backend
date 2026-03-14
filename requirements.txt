@@ -1,5 +1,5 @@
 fastapi>=0.104.0
-libsql-experimental>=0.3.0
+libsql-experimental>=0.0.55
 uvicorn>=0.24.0
 torch>=2.0.0
 xgboost>=2.0.0
