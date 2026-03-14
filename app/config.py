@@ -57,6 +57,10 @@ NEWSDATA_KEY = os.getenv("NEWSDATA_KEY", "")
 # Set this in Render env vars and as SCRAPER_API_KEY GitHub secret
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
 
+# Turso (libsql) database credentials
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
+
 # Sentiment analysis mode: 'simple' or 'finbert'
 # Set to 'finbert' to use the custom ProsusAI/finbert model
 SENTIMENT_MODE = os.getenv("SENTIMENT_MODE", "finbert")

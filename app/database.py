@@ -3,34 +3,58 @@ Database layer for storing sentiment, prices, news articles, and predictions.
 
 NOTE: The sentiment_history table stores raw daily_sentiment (simple mean).
 Cross-day decay is applied at retrieval time by sentiment_service.py
+
+Database: Turso (libsql) — remote, persistent across deploys.
 """
 
 import json
-import sqlite3
-from pathlib import Path
+import os
 from datetime import datetime, date
 from typing import List, Dict, Optional, Any
 import pandas as pd
 import logging
-
-from app.config import BASE_DIR
+import libsql_experimental as libsql
 
 logger = logging.getLogger(__name__)
 
-# Database file location
-DB_PATH = BASE_DIR / "sentiment_history.db"
+
+def get_connection():
+    """Get Turso (libsql) database connection."""
+    url = os.environ.get("TURSO_DATABASE_URL")
+    auth_token = os.environ.get("TURSO_AUTH_TOKEN", "")
+    return libsql.connect(database=url, auth_token=auth_token)
 
 
-def get_connection() -> sqlite3.Connection:
-    """Get database connection."""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    return conn
+def _fetchone_dict(cursor) -> Optional[Dict[str, Any]]:
+    """Fetch one row as a dict using cursor column names."""
+    if cursor.description is None:
+        return None
+    cols = [d[0] for d in cursor.description]
+    row = cursor.fetchone()
+    return dict(zip(cols, row)) if row else None
+
+
+def _fetchall_dicts(cursor) -> List[Dict[str, Any]]:
+    """Fetch all rows as dicts using cursor column names."""
+    if cursor.description is None:
+        return []
+    cols = [d[0] for d in cursor.description]
+    return [dict(zip(cols, row)) for row in cursor.fetchall()]
+
+
+def _query_to_df(conn, query: str, params=None) -> pd.DataFrame:
+    """Execute a SELECT query and return results as a DataFrame."""
+    cursor = conn.cursor()
+    cursor.execute(query, params or [])
+    if cursor.description is None:
+        return pd.DataFrame()
+    cols = [d[0] for d in cursor.description]
+    return pd.DataFrame(cursor.fetchall(), columns=cols)
 
 
 def init_database() -> None:
     """Initialize the sentiment database with required tables."""
-    logger.info(f"Initializing sentiment database at {DB_PATH}")
+    logger.info("Initializing Turso database")
 
     conn = get_connection()
     cursor = conn.cursor()
@@ -237,7 +261,7 @@ def get_sentiment_history(days: int = 60) -> pd.DataFrame:
         LIMIT ?
     """
 
-    df = pd.read_sql_query(query, conn, params=(days,))
+    df = _query_to_df(conn, query, params=(days,))
     conn.close()
 
     if not df.empty:
@@ -268,7 +292,7 @@ def get_sentiment_for_dates(start_date: str, end_date: str) -> pd.DataFrame:
         ORDER BY date
     """
 
-    df = pd.read_sql_query(query, conn, params=(start_date, end_date))
+    df = _query_to_df(conn, query, params=(start_date, end_date))
     conn.close()
 
     if not df.empty:
@@ -290,12 +314,9 @@ def get_latest_sentiment() -> Optional[Dict[str, Any]]:
         LIMIT 1
     """)
 
-    row = cursor.fetchone()
+    result = _fetchone_dict(cursor)
     conn.close()
-
-    if row:
-        return dict(row)
-    return None
+    return result
 
 
 def get_sentiment_count() -> int:
@@ -384,9 +405,9 @@ def add_bulk_prices(price_records: List[Dict[str, Any]]) -> int:
 def get_prices(days: int = 90) -> pd.DataFrame:
     """Return the most recent N days of stored price data."""
     conn = get_connection()
-    df = pd.read_sql_query(
-        "SELECT date, price, source FROM prices ORDER BY date DESC LIMIT ?",
+    df = _query_to_df(
         conn,
+        "SELECT date, price, source FROM prices ORDER BY date DESC LIMIT ?",
         params=(days,),
     )
     conn.close()
@@ -457,7 +478,7 @@ def get_news_articles(article_date: str) -> List[Dict[str, Any]]:
         """,
         (article_date,),
     )
-    rows = [dict(r) for r in cursor.fetchall()]
+    rows = _fetchall_dicts(cursor)
     conn.close()
     return rows
 
@@ -477,7 +498,7 @@ def get_recent_news_articles(days: int = 7) -> List[Dict[str, Any]]:
         """,
         (days,),
     )
-    rows = [dict(r) for r in cursor.fetchall()]
+    rows = _fetchall_dicts(cursor)
     conn.close()
     return rows
 
@@ -534,10 +555,9 @@ def get_latest_prediction() -> Optional[Dict[str, Any]]:
     cursor.execute(
         "SELECT * FROM predictions ORDER BY id DESC LIMIT 1"
     )
-    row = cursor.fetchone()
+    result = _fetchone_dict(cursor)
     conn.close()
-    if row:
-        result = dict(row)
+    if result:
         result["forecasts"] = json.loads(result["forecasts"])
         return result
     return None
@@ -551,8 +571,7 @@ def get_prediction_history(limit: int = 10) -> List[Dict[str, Any]]:
         "SELECT * FROM predictions ORDER BY id DESC LIMIT ?", (limit,)
     )
     rows = []
-    for row in cursor.fetchall():
-        rec = dict(row)
+    for rec in _fetchall_dicts(cursor):
         rec["forecasts"] = json.loads(rec["forecasts"])
         rows.append(rec)
     conn.close()
