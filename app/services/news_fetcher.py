@@ -430,7 +430,7 @@ def compute_sentiment_features_with_articles(
     return _compute_sentiment_dict(all_sentiments, len(articles)), enriched
 
 
-
+def fetch_oil_news_combined(
     date: str = None, api_key: str = None, page_size: int = 100
 ) -> List[Dict[str, Any]]:
     """
