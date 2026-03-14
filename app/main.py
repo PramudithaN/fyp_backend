@@ -30,7 +30,7 @@ from app.config import (
 )
 from app.models.model_loader import model_artifacts
 from app.database import init_database, add_bulk_prices, add_prediction
-from app.services.price_fetcher import fetch_latest_prices, get_last_n_trading_days
+from app.services.price_fetcher import fetch_latest_prices, get_last_n_trading_days, get_market_status
 from app.services.prediction import prediction_service
 from app.services.sentiment_service import sentiment_service
 from app.services.scraper_scheduler import (
@@ -221,12 +221,17 @@ async def predict_now():
         except Exception as db_err:
             logger.warning(f"Failed to persist prediction: {db_err}")
 
+        market = get_market_status()
+
         return PredictionResponse(
             success=True,
             data_source=f"Yahoo Finance ({BRENT_TICKER})",
             last_price_date=last_date,
             last_price=round(last_price, 2),
             forecasts=forecasts,
+            is_market_open=market["is_open"],
+            market_state=market["market_state"],
+            market_status_message=market["message"],
         )
 
     except ValueError as e:

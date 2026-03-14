@@ -48,6 +48,9 @@ class PredictionResponse(BaseModel):
     last_price_date: str = Field(..., description="Date of last known price")
     last_price: float = Field(..., description="Last known price (USD)")
     forecasts: List[ForecastDay] = Field(..., description="14-day price forecasts")
+    is_market_open: bool = Field(..., description="Whether the oil market is currently open")
+    market_state: str = Field(..., description="Raw market state from Yahoo Finance (REGULAR, CLOSED, PRE, POST, etc.)")
+    market_status_message: str = Field(..., description="Human-readable market status")
 
 
 class PriceDataResponse(BaseModel):
