@@ -49,20 +49,12 @@ def load_sentiment_model():
     try:
         from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-        # Pin to specific revision for security (commit hash from 2024-01-15)
-        revision = "9893c6e72d245a054f49c42172ccadf0e99774bb"
-        
         logger.info("Downloading model from Hugging Face (this may take a few minutes on first run)...")
-        _tokenizer = AutoTokenizer.from_pretrained(
-            model_name, 
-            revision=revision,
-            timeout=30  # 30 second timeout for network requests
-        )
-        _model = AutoModelForSequenceClassification.from_pretrained(
-            model_name, 
-            revision=revision,
-            timeout=30
-        )
+        
+        # Load FinBERT without pinning to a specific revision.
+        # The previously pinned revision was deleted from HuggingFace.
+        _tokenizer = AutoTokenizer.from_pretrained(model_name)
+        _model = AutoModelForSequenceClassification.from_pretrained(model_name)
 
         # Use GPU if available
         _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
