@@ -37,7 +37,11 @@ from app.database import (
     get_news_articles,
     get_recent_news_articles,
 )
-from app.services.price_fetcher import fetch_latest_prices, get_market_status
+from app.services.price_fetcher import (
+    fetch_latest_prices,
+    fetch_live_price_snapshot,
+    get_market_status,
+)
 from app.services.prediction import prediction_service
 from app.services.sentiment_service import sentiment_service
 from app.services.scraper_scheduler import (
@@ -87,7 +91,10 @@ def _sync_latest_prices(lookback_days: int = 120) -> pd.DataFrame:
         ]
         if records:
             add_bulk_prices(records)
-            return pd.DataFrame(records)
+            normalized = latest_prices[["date", "price"]].copy()
+            normalized["date"] = pd.to_datetime(normalized["date"]).dt.tz_localize(None)
+            normalized["source"] = "yahoo_finance"
+            return normalized.sort_values("date").reset_index(drop=True)
     except Exception as exc:
         logger.warning("Failed to refresh live prices, falling back to stored data: %s", exc)
 
@@ -246,6 +253,7 @@ async def get_prices():
     """
     try:
         all_prices = _sync_latest_prices(lookback_days=60)
+        all_prices["date"] = pd.to_datetime(all_prices["date"])
         all_prices = all_prices.sort_values("date").reset_index(drop=True)
         prices = all_prices.tail(30)  # Get last 30 days
 
@@ -481,13 +489,33 @@ async def predict_now():
     If the live price refresh fails, prediction falls back to the latest stored prices."""
     try:
         latest_prices = _sync_latest_prices(lookback_days=120)
+        latest_prices["date"] = pd.to_datetime(latest_prices["date"])
+        latest_prices = latest_prices.sort_values("date").reset_index(drop=True)
 
         # Generate predictions using the refreshed price history
         forecasts = prediction_service.predict(prices=latest_prices)
 
-        latest_prices = latest_prices.sort_values("date").reset_index(drop=True)
-        last_price = float(latest_prices["price"].iloc[-1])
-        last_date = pd.to_datetime(latest_prices["date"].iloc[-1]).strftime("%Y-%m-%d")
+        close_price = float(latest_prices["price"].iloc[-1])
+        close_date = pd.to_datetime(latest_prices["date"].iloc[-1]).strftime("%Y-%m-%d")
+
+        # Use intraday quote as current last known price when available,
+        # but do not persist intraday rows into prices table.
+        live_snapshot = fetch_live_price_snapshot()
+        if live_snapshot and float(live_snapshot["price"]) > 0:
+            last_price = float(live_snapshot["price"])
+            last_date = str(live_snapshot["as_of_date"])
+            if close_price > 0:
+                scale = last_price / close_price
+                forecasts = [
+                    {
+                        **f,
+                        "forecasted_price": round(float(f["forecasted_price"]) * scale, 2),
+                    }
+                    for f in forecasts
+                ]
+        else:
+            last_price = close_price
+            last_date = close_date
 
         # Refreshed prices are already persisted by _sync_latest_prices.
 

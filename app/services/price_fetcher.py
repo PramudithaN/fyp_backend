@@ -4,8 +4,8 @@ Price fetcher service - fetches Brent oil prices from Yahoo Finance.
 
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime, timedelta, UTC
+from typing import Optional, Dict, Any
 import logging
 
 from app.config import BRENT_TICKER
@@ -155,3 +155,43 @@ def validate_price_data(prices: pd.DataFrame, min_days: int = 30) -> bool:
         return False
 
     return True
+
+
+def fetch_live_price_snapshot() -> Optional[Dict[str, Any]]:
+    """
+    Fetch the latest intraday Brent quote for display/forecast anchoring.
+
+    This function does not persist intraday prices. Database persistence remains
+    based on completed daily closes from fetch_latest_prices().
+    """
+    try:
+        ticker = yf.Ticker(BRENT_TICKER)
+        intraday = ticker.history(period="1d", interval="1m", prepost=True)
+
+        if intraday is not None and not intraday.empty:
+            last_row = intraday.iloc[-1]
+            price = float(last_row.get("Close", 0.0))
+            last_ts = pd.to_datetime(intraday.index[-1]).tz_localize(None)
+            if price > 0:
+                return {
+                    "price": price,
+                    "as_of": last_ts.isoformat(),
+                    "as_of_date": last_ts.strftime("%Y-%m-%d"),
+                    "source": "yahoo_finance_intraday",
+                }
+
+        fast_info = getattr(ticker, "fast_info", None)
+        if fast_info:
+            fallback_price = fast_info.get("lastPrice") or fast_info.get("regularMarketPreviousClose")
+            if fallback_price:
+                now_ts = datetime.now(UTC)
+                return {
+                    "price": float(fallback_price),
+                    "as_of": now_ts.isoformat(),
+                    "as_of_date": now_ts.strftime("%Y-%m-%d"),
+                    "source": "yahoo_finance_fast_info",
+                }
+    except Exception as exc:
+        logger.warning("Failed to fetch live price snapshot: %s", exc)
+
+    return None

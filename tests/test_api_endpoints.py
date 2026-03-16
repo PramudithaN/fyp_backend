@@ -137,13 +137,25 @@ class TestNewsEndpoint:
 class TestPredictEndpoint:
     """Tests for prediction endpoint."""
 
+    @patch("app.main.fetch_live_price_snapshot")
     @patch("app.main.prediction_service.predict")
     @patch("app.main._sync_latest_prices")
     def test_predict_success(
-        self, mock_sync_prices, mock_predict, test_client, sample_prices_df
+        self,
+        mock_sync_prices,
+        mock_predict,
+        mock_live_snapshot,
+        test_client,
+        sample_prices_df,
     ):
         """Test successful prediction."""
         mock_sync_prices.return_value = sample_prices_df
+        mock_live_snapshot.return_value = {
+            "price": 92.0,
+            "as_of": "2026-03-17T10:00:00",
+            "as_of_date": "2026-03-17",
+            "source": "yahoo_finance_intraday",
+        }
 
         # Mock prediction result
         mock_forecasts = [
@@ -164,6 +176,8 @@ class TestPredictEndpoint:
         assert "last_price" in data
         assert "forecasts" in data
         assert len(data["forecasts"]) == 14
+        assert data["last_price"] == pytest.approx(92.0)
+        assert data["last_price_date"] == "2026-03-17"
         mock_sync_prices.assert_called_once_with(lookback_days=120)
         synced_prices = mock_predict.call_args.kwargs["prices"]
         pd.testing.assert_frame_equal(synced_prices, sample_prices_df)
