@@ -43,7 +43,7 @@ class _LibsqlClientCursor:
         self.lastrowid = None
 
     def execute(self, query: str, params=None):
-        result = self._client.execute(query, params or [])
+        result = self._client.execute(query, params or ())
 
         self._rows = list(result) if result is not None else []
         self._row_index = 0
@@ -134,7 +134,7 @@ def _fetchall_dicts(cursor) -> List[Dict[str, Any]]:
 def _query_to_df(conn, query: str, params=None) -> pd.DataFrame:
     """Execute a SELECT query and return results as a DataFrame."""
     cursor = conn.cursor()
-    cursor.execute(query, params or [])
+    cursor.execute(query, params or ())
     if cursor.description is None:
         return pd.DataFrame()
     cols = [d[0] for d in cursor.description]
