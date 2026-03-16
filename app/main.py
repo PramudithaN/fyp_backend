@@ -29,7 +29,12 @@ from app.config import (
     SCRAPER_API_KEY,
 )
 from app.models.model_loader import model_artifacts
-from app.database import init_database, add_prediction, get_actual_vs_predicted_until
+from app.database import (
+    init_database,
+    add_prediction,
+    get_actual_vs_predicted_until,
+    get_latest_prediction_fan_chart,
+)
 from app.services.price_fetcher import get_market_status
 from app.services.prediction import prediction_service
 from app.services.sentiment_service import sentiment_service
@@ -51,6 +56,7 @@ from app.schemas.prediction import (
     SentimentHistoryResponse,
     HistoricalPricesResponse,
     HistoricalCombinedFeaturesResponse,
+    PredictionFanResponse,
 )
 
 # Configure logging
@@ -506,6 +512,48 @@ async def compare_predictions_with_actuals(
         )
     except Exception as e:
         logger.error(f"Prediction comparison error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/predictions/fan",
+    response_model=PredictionFanResponse,
+    responses={
+        404: {
+            "model": ErrorResponse,
+            "description": "No stored prediction runs available",
+        },
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error while building fan chart data",
+        },
+    },
+)
+async def prediction_fan_chart(
+    min_samples_per_horizon: Annotated[int, Query(ge=1, le=100)] = 20,
+):
+    """
+    Return fan chart quantile bands for the latest stored forecast run.
+
+    Bands are calibrated from historical forecast errors by horizon.
+    """
+    try:
+        fan_payload = get_latest_prediction_fan_chart(
+            min_samples_per_horizon=min_samples_per_horizon
+        )
+
+        return PredictionFanResponse(
+            success=True,
+            generated_at=fan_payload["generated_at"],
+            last_price_date=fan_payload["last_price_date"],
+            last_price=fan_payload["last_price"],
+            calibration_method=fan_payload["calibration_method"],
+            fan=fan_payload["fan"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Fan chart endpoint error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

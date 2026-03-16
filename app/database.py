@@ -11,6 +11,7 @@ import json
 import os
 import math
 import re
+from collections import defaultdict
 from datetime import datetime, date
 from typing import List, Dict, Optional, Any
 import pandas as pd
@@ -1011,6 +1012,197 @@ def get_prediction_history(limit: int = 10) -> List[Dict[str, Any]]:
         rows.append(rec)
     conn.close()
     return rows
+
+
+def _compute_quantile(values: List[float], q: float) -> float:
+    """Compute a quantile from a non-empty numeric list using linear interpolation."""
+    if not values:
+        return 0.0
+
+    sorted_vals = sorted(values)
+    if len(sorted_vals) == 1:
+        return float(sorted_vals[0])
+
+    pos = (len(sorted_vals) - 1) * q
+    lower_idx = int(math.floor(pos))
+    upper_idx = int(math.ceil(pos))
+
+    if lower_idx == upper_idx:
+        return float(sorted_vals[lower_idx])
+
+    lower_val = sorted_vals[lower_idx]
+    upper_val = sorted_vals[upper_idx]
+    weight = pos - lower_idx
+    return float(lower_val + (upper_val - lower_val) * weight)
+
+
+def _collect_relative_errors_by_horizon(
+    prediction_runs: pd.DataFrame,
+    actual_price_by_date: Dict[date, float],
+) -> Dict[int, List[float]]:
+    """Build empirical signed relative errors grouped by forecast horizon."""
+    errors_by_horizon: Dict[int, List[float]] = defaultdict(list)
+
+    if prediction_runs.empty:
+        return errors_by_horizon
+
+    for _, row in prediction_runs.iterrows():
+        reference_date = _parse_prediction_reference_date(
+            last_price_date_raw=row.get("last_price_date"),
+            generated_at_raw=row.get("generated_at"),
+        )
+        if reference_date is None:
+            continue
+
+        forecasts = _parse_forecasts_blob(row.get("forecasts"))
+        for forecast in forecasts:
+            parsed = _parse_single_forecast_observation(
+                forecast=forecast,
+                reference_date=reference_date,
+                generated_at_raw=row.get("generated_at"),
+                cutoff_date=date.today(),
+            )
+            if parsed is None:
+                continue
+
+            target_date, pred_entry = parsed
+            actual_price = actual_price_by_date.get(target_date)
+            predicted_price = float(pred_entry.get("forecasted_price", 0.0))
+            horizon = int(pred_entry.get("horizon", 14))
+
+            if actual_price is None or predicted_price <= 0:
+                continue
+
+            rel_error = (actual_price - predicted_price) / predicted_price
+            errors_by_horizon[horizon].append(float(rel_error))
+
+    return errors_by_horizon
+
+
+def _calibration_pool_for_horizon(
+    errors_by_horizon: Dict[int, List[float]],
+    horizon: int,
+    min_samples: int,
+) -> List[float]:
+    """Get calibration samples for a horizon, widening to neighbors and global pool if needed."""
+    direct = list(errors_by_horizon.get(horizon, []))
+    if len(direct) >= min_samples:
+        return direct
+
+    pooled = list(direct)
+    max_h = 14
+    for radius in range(1, max_h):
+        left = horizon - radius
+        right = horizon + radius
+        if left >= 1:
+            pooled.extend(errors_by_horizon.get(left, []))
+        if right <= max_h:
+            pooled.extend(errors_by_horizon.get(right, []))
+        if len(pooled) >= min_samples:
+            return pooled
+
+    global_pool: List[float] = []
+    for h in range(1, max_h + 1):
+        global_pool.extend(errors_by_horizon.get(h, []))
+
+    if global_pool:
+        return global_pool
+
+    # Final deterministic fallback if no calibration data exists at all.
+    return [-0.03, -0.015, 0.0, 0.015, 0.03]
+
+
+def get_latest_prediction_fan_chart(min_samples_per_horizon: int = 20) -> Dict[str, Any]:
+    """
+    Return fan chart data for the latest prediction run using empirical error calibration.
+
+    Uncertainty bands are derived from historical signed relative errors
+    ((actual - predicted) / predicted), grouped by horizon.
+    """
+    latest = get_latest_prediction()
+    if not latest:
+        raise ValueError("No stored prediction runs available")
+
+    conn = get_connection()
+    try:
+        prediction_runs = _query_to_df(
+            conn,
+            """
+            SELECT generated_at, last_price_date, forecasts
+            FROM predictions
+            ORDER BY generated_at ASC
+            """,
+        )
+        actual_prices_df = _query_to_df(
+            conn,
+            """
+            SELECT date, price
+            FROM prices
+            ORDER BY date ASC
+            """,
+        )
+    finally:
+        conn.close()
+
+    actual_price_by_date: Dict[date, float] = {}
+    if not actual_prices_df.empty:
+        actual_prices_df["date"] = pd.to_datetime(actual_prices_df["date"]).dt.date
+        actual_price_by_date = {
+            row["date"]: float(row["price"]) for _, row in actual_prices_df.iterrows()
+        }
+
+    errors_by_horizon = _collect_relative_errors_by_horizon(
+        prediction_runs=prediction_runs,
+        actual_price_by_date=actual_price_by_date,
+    )
+
+    fan_points: List[Dict[str, Any]] = []
+    latest_forecasts = latest.get("forecasts", []) if isinstance(latest, dict) else []
+
+    for item in latest_forecasts:
+        date_str = str(item.get("date"))
+        horizon = int(item.get("horizon", 14))
+        point_forecast = float(item.get("forecasted_price", 0.0))
+
+        samples = _calibration_pool_for_horizon(
+            errors_by_horizon=errors_by_horizon,
+            horizon=horizon,
+            min_samples=max(1, int(min_samples_per_horizon)),
+        )
+
+        q10 = _compute_quantile(samples, 0.10)
+        q25 = _compute_quantile(samples, 0.25)
+        q50 = _compute_quantile(samples, 0.50)
+        q75 = _compute_quantile(samples, 0.75)
+        q90 = _compute_quantile(samples, 0.90)
+
+        def _apply(q: float) -> float:
+            return round(max(0.01, point_forecast * (1.0 + q)), 2)
+
+        fan_points.append(
+            {
+                "date": date_str,
+                "horizon": horizon,
+                "point_forecast": round(point_forecast, 2),
+                "p10": _apply(q10),
+                "p25": _apply(q25),
+                "p50": _apply(q50),
+                "p75": _apply(q75),
+                "p90": _apply(q90),
+                "sample_count": len(samples),
+            }
+        )
+
+    return {
+        "generated_at": str(latest.get("generated_at", "")),
+        "last_price_date": str(latest.get("last_price_date", "")),
+        "last_price": float(latest.get("last_price", 0.0)),
+        "calibration_method": (
+            "Empirical horizon-wise quantiles from historical signed relative forecast "
+            "errors; neighbor/global pooling fallback when samples are sparse."
+        ),
+        "fan": fan_points,
+    }
 
 
 def _empty_comparison_payload(cutoff_date: date) -> Dict[str, Any]:

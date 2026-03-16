@@ -181,6 +181,35 @@ class PredictionComparisonResponse(BaseModel):
     comparison: List[PredictionComparisonDay]
 
 
+class FanChartPoint(BaseModel):
+    """Single forecast point with fan chart quantile bands."""
+
+    date: str = Field(..., description="Forecast date")
+    horizon: int = Field(..., ge=1, le=14, description="Days ahead (1-14)")
+    point_forecast: float = Field(..., description="Point forecast price (USD)")
+    p10: float = Field(..., description="10th percentile forecast price (USD)")
+    p25: float = Field(..., description="25th percentile forecast price (USD)")
+    p50: float = Field(..., description="50th percentile forecast price (USD)")
+    p75: float = Field(..., description="75th percentile forecast price (USD)")
+    p90: float = Field(..., description="90th percentile forecast price (USD)")
+    sample_count: int = Field(..., ge=0, description="Calibration samples used")
+
+
+class PredictionFanResponse(BaseModel):
+    """Response for fan chart forecast endpoint."""
+
+    success: bool = Field(..., description="Whether fan chart generation succeeded")
+    generated_at: str = Field(..., description="Timestamp of latest forecast run")
+    last_price_date: str = Field(..., description="Reference date for latest forecast")
+    last_price: float = Field(..., description="Last known price used by latest forecast")
+    calibration_method: str = Field(
+        ..., description="How uncertainty bands were calibrated"
+    )
+    fan: List[FanChartPoint] = Field(
+        ..., description="Forecast points with fan chart quantile bands"
+    )
+
+
 class HistoricalPricesResponse(BaseModel):
     """Response for historical prices endpoint."""
 

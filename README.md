@@ -72,24 +72,27 @@ The FinBERT sentiment model is loaded from Hugging Face on first use. For deploy
 | Endpoint   | Method | Description                   |
 | ---------- | ------ | ----------------------------- |
 | `/predict` | GET    | Auto-fetch prices and predict |
-| `/predict` | POST   | Predict with custom prices    |
+| `/predictions/fan` | GET | Fan chart quantile bands for latest forecast |
+| `/predictions/compare` | GET | Compare stored forecasts vs actual prices |
 | `/prices`  | GET    | View fetched price data       |
+| `/historical/prices` | GET | Historical imported prices (daily/weekly/monthly) |
+| `/historical/features/combined` | GET | Historical joined price + news features |
 | `/health`  | GET    | Health check                  |
 | `/sentiment/add` | POST | Add daily sentiment      |
 | `/sentiment/bulk` | POST | Bulk upload sentiment   |
-| `/sentiment` | GET  | View sentiment history        |
 | `/docs`    | GET    | Swagger API Documentation     |
 
 ## Example Usage
 
 ```bash
-# Auto-predict (fetches latest prices automatically)
+# Generate latest 14-day forecast
 curl http://localhost:8000/predict
 
-# Manual predict with custom data
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"prices": [{"date": "2025-12-01", "price": 74.12}, ...]}'
+# Fan chart bands for frontend visualization
+curl "http://localhost:8000/predictions/fan?min_samples_per_horizon=20"
+
+# Historical actual vs predicted comparison
+curl "http://localhost:8000/predictions/compare?start_date=2025-01-01&end_date=2025-12-31"
 ```
 
 ## Model Artifacts
