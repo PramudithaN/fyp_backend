@@ -179,3 +179,29 @@ class PredictionComparisonResponse(BaseModel):
     )
     metrics: PredictionComparisonMetrics
     comparison: List[PredictionComparisonDay]
+
+
+class HistoricalPricesResponse(BaseModel):
+    """Response for historical prices endpoint."""
+
+    success: bool
+    granularity: str
+    total_available: int
+    total_records: int
+    limit: int
+    offset: int
+    date_range: dict
+    data: List[dict]
+
+
+class HistoricalCombinedFeaturesResponse(BaseModel):
+    """Response for combined historical features endpoint."""
+
+    success: bool
+    granularity: str
+    total_available: int
+    total_records: int
+    limit: int
+    offset: int
+    date_range: dict
+    data: List[dict]

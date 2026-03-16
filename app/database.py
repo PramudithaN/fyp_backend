@@ -10,6 +10,7 @@ Database: Turso (libsql) — remote, persistent across deploys.
 import json
 import os
 import math
+import re
 from datetime import datetime, date
 from typing import List, Dict, Optional, Any
 import pandas as pd
@@ -23,6 +24,10 @@ except ModuleNotFoundError:
     _USE_EXPERIMENTAL_LIBSQL = False
 
 logger = logging.getLogger(__name__)
+
+DATE_BETWEEN_CLAUSE = " WHERE date >= ? AND date <= ?"
+DATE_FROM_CLAUSE = " WHERE date >= ?"
+DATE_TO_CLAUSE = " WHERE date <= ?"
 
 
 class _LibsqlClientCursor:
@@ -175,6 +180,80 @@ def init_database() -> None:
     """)
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_prices_date ON prices(date)
+    """)
+
+    # Create historical prices table (dataset imports)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS historical_prices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT UNIQUE NOT NULL,
+            price REAL NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            volume REAL,
+            change_pct REAL,
+            source TEXT DEFAULT 'historical_import',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_historical_prices_date ON historical_prices(date)
+    """)
+
+    # Create historical news features table (dataset imports)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS historical_news_features (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT UNIQUE NOT NULL,
+            daily_sentiment_decay REAL NOT NULL,
+            news_volume REAL NOT NULL,
+            log_news_volume REAL NOT NULL,
+            decayed_news_volume REAL NOT NULL,
+            high_news_regime INTEGER NOT NULL,
+            source TEXT DEFAULT 'historical_import',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_historical_news_features_date ON historical_news_features(date)
+    """)
+
+    # Convenience full-outer-date view across both historical tables.
+    cursor.execute("""
+        CREATE VIEW IF NOT EXISTS historical_features_combined AS
+        SELECT
+            hp.date AS date,
+            hp.price AS price,
+            hp.open AS open,
+            hp.high AS high,
+            hp.low AS low,
+            hp.volume AS volume,
+            hp.change_pct AS change_pct,
+            hnf.daily_sentiment_decay AS daily_sentiment_decay,
+            hnf.news_volume AS news_volume,
+            hnf.log_news_volume AS log_news_volume,
+            hnf.decayed_news_volume AS decayed_news_volume,
+            hnf.high_news_regime AS high_news_regime
+        FROM historical_prices hp
+        LEFT JOIN historical_news_features hnf ON hp.date = hnf.date
+        UNION ALL
+        SELECT
+            hnf.date AS date,
+            hp.price AS price,
+            hp.open AS open,
+            hp.high AS high,
+            hp.low AS low,
+            hp.volume AS volume,
+            hp.change_pct AS change_pct,
+            hnf.daily_sentiment_decay AS daily_sentiment_decay,
+            hnf.news_volume AS news_volume,
+            hnf.log_news_volume AS log_news_volume,
+            hnf.decayed_news_volume AS decayed_news_volume,
+            hnf.high_news_regime AS high_news_regime
+        FROM historical_news_features hnf
+        LEFT JOIN historical_prices hp ON hp.date = hnf.date
+        WHERE hp.date IS NULL
     """)
 
     # Create news_articles table (one row per article, with per-article sentiment)
@@ -498,6 +577,279 @@ def get_prices(days: int = 90) -> pd.DataFrame:
         df["date"] = pd.to_datetime(df["date"])
         df = df.sort_values("date").reset_index(drop=True)
     return df
+
+
+def _to_float(value: Any) -> Optional[float]:
+    """Convert mixed numeric text formats (%, K/M/B suffixes, commas) to float."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        numeric_value = float(value)
+        return numeric_value if math.isfinite(numeric_value) else None
+
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "null", "-"}:
+        return None
+
+    multiplier = 1.0
+    suffix = text[-1].upper()
+    if suffix in {"K", "M", "B"}:
+        text = text[:-1]
+        multiplier = {"K": 1_000.0, "M": 1_000_000.0, "B": 1_000_000_000.0}[suffix]
+
+    text = text.replace(",", "").replace("%", "")
+    text = re.sub(r"[^0-9.+-]", "", text)
+
+    if not text:
+        return None
+
+    try:
+        numeric_value = float(text) * multiplier
+        return numeric_value if math.isfinite(numeric_value) else None
+    except ValueError:
+        return None
+
+
+def add_bulk_historical_prices(
+    price_records: List[Dict[str, Any]],
+    default_source: str = "historical_import",
+) -> int:
+    """
+    Insert or replace multiple historical price records.
+
+    Required keys per record:
+    - date
+    - price
+    Optional keys:
+    - open, high, low, volume, change_pct, source
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    count = 0
+    try:
+        chunk_size = 100
+        for i in range(0, len(price_records), chunk_size):
+            chunk = price_records[i : i + chunk_size]
+            values = []
+            for rec in chunk:
+                values.extend(
+                    [
+                        rec["date"],
+                        _to_float(rec["price"]),
+                        _to_float(rec.get("open")),
+                        _to_float(rec.get("high")),
+                        _to_float(rec.get("low")),
+                        _to_float(rec.get("volume")),
+                        _to_float(rec.get("change_pct")),
+                        rec.get("source", default_source),
+                    ]
+                )
+
+            placeholders = ", ".join(["(?, ?, ?, ?, ?, ?, ?, ?)"] * len(chunk))
+            query = (
+                "INSERT OR REPLACE INTO historical_prices "
+                "(date, price, open, high, low, volume, change_pct, source) "
+                f"VALUES {placeholders}"
+            )
+            cursor.execute(query, tuple(values))
+            count += len(chunk)
+
+        conn.commit()
+        logger.info(f"Saved {count} historical price records")
+        return count
+    except Exception as e:
+        logger.error(f"Error in bulk add historical prices: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def add_bulk_historical_news_features(
+    feature_records: List[Dict[str, Any]],
+    default_source: str = "historical_import",
+) -> int:
+    """
+    Insert or replace multiple historical news feature rows.
+
+    Required keys per record:
+    - date, daily_sentiment_decay, news_volume, log_news_volume,
+      decayed_news_volume, high_news_regime
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    count = 0
+    try:
+        chunk_size = 100
+        for i in range(0, len(feature_records), chunk_size):
+            chunk = feature_records[i : i + chunk_size]
+            values = []
+            for rec in chunk:
+                values.extend(
+                    [
+                        rec["date"],
+                        _to_float(rec["daily_sentiment_decay"]),
+                        _to_float(rec["news_volume"]),
+                        _to_float(rec["log_news_volume"]),
+                        _to_float(rec["decayed_news_volume"]),
+                        int(float(rec["high_news_regime"])),
+                        rec.get("source", default_source),
+                    ]
+                )
+
+            placeholders = ", ".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(chunk))
+            query = (
+                "INSERT OR REPLACE INTO historical_news_features "
+                "(date, daily_sentiment_decay, news_volume, log_news_volume, "
+                "decayed_news_volume, high_news_regime, source) "
+                f"VALUES {placeholders}"
+            )
+            cursor.execute(query, tuple(values))
+            count += len(chunk)
+
+        conn.commit()
+        logger.info(f"Saved {count} historical news feature records")
+        return count
+    except Exception as e:
+        logger.error(f"Error in bulk add historical news features: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_historical_features_combined(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> pd.DataFrame:
+    """Return joined historical price and news features over an optional date range."""
+    conn = get_connection()
+
+    base_query = """
+        SELECT date, price, open, high, low, volume, change_pct,
+               daily_sentiment_decay, news_volume, log_news_volume,
+               decayed_news_volume, high_news_regime
+        FROM historical_features_combined
+    """
+    params: List[Any] = []
+
+    if start_date and end_date:
+        base_query += DATE_BETWEEN_CLAUSE
+        params.extend([start_date, end_date])
+    elif start_date:
+        base_query += DATE_FROM_CLAUSE
+        params.append(start_date)
+    elif end_date:
+        base_query += DATE_TO_CLAUSE
+        params.append(end_date)
+
+    base_query += " ORDER BY date"
+
+    if limit is not None:
+        base_query += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+    df = _query_to_df(conn, base_query, tuple(params))
+    conn.close()
+
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+
+    return df
+
+
+def get_historical_features_combined_count(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> int:
+    """Return total row count in combined historical view for an optional date range."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    query = "SELECT COUNT(*) FROM historical_features_combined"
+    params: List[Any] = []
+    if start_date and end_date:
+        query += DATE_BETWEEN_CLAUSE
+        params.extend([start_date, end_date])
+    elif start_date:
+        query += DATE_FROM_CLAUSE
+        params.append(start_date)
+    elif end_date:
+        query += DATE_TO_CLAUSE
+        params.append(end_date)
+
+    cursor.execute(query, tuple(params))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return int(count)
+
+
+def get_historical_prices(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+) -> pd.DataFrame:
+    """Return historical price dataset over an optional date range."""
+    conn = get_connection()
+
+    base_query = """
+        SELECT date, price, open, high, low, volume, change_pct, source
+        FROM historical_prices
+    """
+    params: List[Any] = []
+
+    if start_date and end_date:
+        base_query += DATE_BETWEEN_CLAUSE
+        params.extend([start_date, end_date])
+    elif start_date:
+        base_query += DATE_FROM_CLAUSE
+        params.append(start_date)
+    elif end_date:
+        base_query += DATE_TO_CLAUSE
+        params.append(end_date)
+
+    base_query += " ORDER BY date"
+
+    if limit is not None:
+        base_query += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+    df = _query_to_df(conn, base_query, tuple(params))
+    conn.close()
+
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+
+    return df
+
+
+def get_historical_prices_count(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> int:
+    """Return total historical price rows for an optional date range."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    query = "SELECT COUNT(*) FROM historical_prices"
+    params: List[Any] = []
+    if start_date and end_date:
+        query += DATE_BETWEEN_CLAUSE
+        params.extend([start_date, end_date])
+    elif start_date:
+        query += DATE_FROM_CLAUSE
+        params.append(start_date)
+    elif end_date:
+        query += DATE_TO_CLAUSE
+        params.append(end_date)
+
+    cursor.execute(query, tuple(params))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return int(count)
 
 
 # ---------------------------------------------------------------------------

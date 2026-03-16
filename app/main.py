@@ -49,6 +49,8 @@ from app.schemas.prediction import (
     BulkSentimentRequest,
     SentimentAddResponse,
     SentimentHistoryResponse,
+    HistoricalPricesResponse,
+    HistoricalCombinedFeaturesResponse,
 )
 
 # Configure logging
@@ -56,6 +58,62 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def _aggregate_historical_prices(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
+    """Aggregate historical price series for chart-friendly granularity."""
+    if df.empty or granularity == "daily":
+        return df
+
+    working = df.copy().sort_values("date")
+    working["date"] = pd.to_datetime(working["date"])
+    working = working.set_index("date")
+
+    rule = "W" if granularity == "weekly" else "MS"
+
+    aggregated = pd.DataFrame(
+        {
+            "open": working["open"].resample(rule).first(),
+            "high": working["high"].resample(rule).max(),
+            "low": working["low"].resample(rule).min(),
+            "price": working["price"].resample(rule).last(),
+            "volume": working["volume"].resample(rule).sum(),
+            "change_pct": working["change_pct"].resample(rule).mean(),
+            "source": working["source"].resample(rule).first(),
+        }
+    )
+    aggregated = aggregated.dropna(subset=["price"]).reset_index()
+    return aggregated
+
+
+def _aggregate_historical_features(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
+    """Aggregate combined historical price + news features by period."""
+    if df.empty or granularity == "daily":
+        return df
+
+    working = df.copy().sort_values("date")
+    working["date"] = pd.to_datetime(working["date"])
+    working = working.set_index("date")
+
+    rule = "W" if granularity == "weekly" else "MS"
+
+    aggregated = pd.DataFrame(
+        {
+            "open": working["open"].resample(rule).first(),
+            "high": working["high"].resample(rule).max(),
+            "low": working["low"].resample(rule).min(),
+            "price": working["price"].resample(rule).last(),
+            "volume": working["volume"].resample(rule).sum(),
+            "change_pct": working["change_pct"].resample(rule).mean(),
+            "daily_sentiment_decay": working["daily_sentiment_decay"].resample(rule).mean(),
+            "news_volume": working["news_volume"].resample(rule).sum(),
+            "log_news_volume": working["log_news_volume"].resample(rule).mean(),
+            "decayed_news_volume": working["decayed_news_volume"].resample(rule).mean(),
+            "high_news_regime": working["high_news_regime"].resample(rule).max(),
+        }
+    )
+    aggregated = aggregated.dropna(subset=["price", "daily_sentiment_decay"]).reset_index()
+    return aggregated
 
 
 @asynccontextmanager
@@ -168,6 +226,148 @@ async def get_prices():
 
     except Exception as e:
         logger.error(f"Error fetching prices: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/historical/prices",
+    response_model=HistoricalPricesResponse,
+    responses={
+        500: {"model": ErrorResponse, "description": "Server error fetching historical prices"}
+    },
+)
+async def get_historical_prices(
+    start_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    end_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    granularity: Annotated[str, Query(pattern=r"^(daily|weekly|monthly)$")] = "daily",
+    limit: Annotated[int, Query(ge=1, le=5000)] = 500,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    """Return imported historical price records from historical_prices table."""
+    try:
+        from app.database import (
+            get_historical_prices as get_historical_prices_db,
+            get_historical_prices_count,
+        )
+
+        if granularity == "daily":
+            total_available = get_historical_prices_count(
+                start_date=start_date,
+                end_date=end_date,
+            )
+            df = get_historical_prices_db(
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+                offset=offset,
+            )
+        else:
+            raw_df = get_historical_prices_db(start_date=start_date, end_date=end_date)
+            aggregated_df = _aggregate_historical_prices(raw_df, granularity)
+            total_available = len(aggregated_df)
+            df = aggregated_df.iloc[offset : offset + limit].reset_index(drop=True)
+
+        if df.empty:
+            return HistoricalPricesResponse(
+                success=True,
+                granularity=granularity,
+                total_available=total_available,
+                total_records=0,
+                limit=limit,
+                offset=offset,
+                date_range={"start": None, "end": None},
+                data=[],
+            )
+
+        return HistoricalPricesResponse(
+            success=True,
+            granularity=granularity,
+            total_available=total_available,
+            total_records=len(df),
+            limit=limit,
+            offset=offset,
+            date_range={
+                "start": str(df["date"].iloc[0].date()),
+                "end": str(df["date"].iloc[-1].date()),
+            },
+            data=df.to_dict(orient="records"),
+        )
+    except Exception as e:
+        logger.error(f"Error fetching historical prices: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/historical/features/combined",
+    response_model=HistoricalCombinedFeaturesResponse,
+    responses={
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error fetching combined historical features",
+        }
+    },
+)
+async def get_historical_features_combined(
+    start_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    end_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    granularity: Annotated[str, Query(pattern=r"^(daily|weekly|monthly)$")] = "daily",
+    limit: Annotated[int, Query(ge=1, le=5000)] = 500,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    """Return combined historical price + news features joined by date."""
+    try:
+        from app.database import (
+            get_historical_features_combined as get_historical_features_combined_db,
+            get_historical_features_combined_count,
+        )
+
+        if granularity == "daily":
+            total_available = get_historical_features_combined_count(
+                start_date=start_date,
+                end_date=end_date,
+            )
+            df = get_historical_features_combined_db(
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+                offset=offset,
+            )
+        else:
+            raw_df = get_historical_features_combined_db(
+                start_date=start_date,
+                end_date=end_date,
+            )
+            aggregated_df = _aggregate_historical_features(raw_df, granularity)
+            total_available = len(aggregated_df)
+            df = aggregated_df.iloc[offset : offset + limit].reset_index(drop=True)
+
+        if df.empty:
+            return HistoricalCombinedFeaturesResponse(
+                success=True,
+                granularity=granularity,
+                total_available=total_available,
+                total_records=0,
+                limit=limit,
+                offset=offset,
+                date_range={"start": None, "end": None},
+                data=[],
+            )
+
+        return HistoricalCombinedFeaturesResponse(
+            success=True,
+            granularity=granularity,
+            total_available=total_available,
+            total_records=len(df),
+            limit=limit,
+            offset=offset,
+            date_range={
+                "start": str(df["date"].iloc[0].date()),
+                "end": str(df["date"].iloc[-1].date()),
+            },
+            data=df.to_dict(orient="records"),
+        )
+    except Exception as e:
+        logger.error(f"Error fetching combined historical features: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
