@@ -13,16 +13,98 @@ from datetime import datetime, date
 from typing import List, Dict, Optional, Any
 import pandas as pd
 import logging
-import libsql_experimental as libsql
+
+try:
+    import libsql_experimental as libsql
+    _USE_EXPERIMENTAL_LIBSQL = True
+except ModuleNotFoundError:
+    import libsql_client
+    _USE_EXPERIMENTAL_LIBSQL = False
 
 logger = logging.getLogger(__name__)
+
+
+class _LibsqlClientCursor:
+    """Minimal DB-API-like cursor shim for libsql_client sync client."""
+
+    def __init__(self, client):
+        self._client = client
+        self._rows: List[Any] = []
+        self._row_index = 0
+        self.description = None
+        self.rowcount = 0
+        self.lastrowid = None
+
+    def execute(self, query: str, params=None):
+        result = self._client.execute(query, params or [])
+
+        self._rows = list(result) if result is not None else []
+        self._row_index = 0
+
+        columns = getattr(result, "columns", None)
+        if columns:
+            self.description = [(col,) for col in columns]
+        else:
+            self.description = None
+
+        self.rowcount = int(getattr(result, "rows_affected", 0) or 0)
+        self.lastrowid = getattr(result, "last_insert_rowid", None)
+        return self
+
+    def fetchone(self):
+        if self._row_index >= len(self._rows):
+            return None
+        row = self._rows[self._row_index]
+        self._row_index += 1
+        return row
+
+    def fetchall(self):
+        if self._row_index >= len(self._rows):
+            return []
+        rows = self._rows[self._row_index :]
+        self._row_index = len(self._rows)
+        return rows
+
+
+class _LibsqlClientConnection:
+    """Minimal connection shim for libsql_client to match existing code paths."""
+
+    def __init__(self, client):
+        self._client = client
+
+    def cursor(self):
+        return _LibsqlClientCursor(self._client)
+
+    def commit(self):
+        # libsql_client executes statements immediately; no explicit commit needed.
+        return None
+
+    def rollback(self):
+        # libsql_client has no transaction in this shim path.
+        return None
+
+    def close(self):
+        close_fn = getattr(self._client, "close", None)
+        if callable(close_fn):
+            close_fn()
 
 
 def get_connection():
     """Get Turso (libsql) database connection."""
     url = os.environ.get("TURSO_DATABASE_URL")
     auth_token = os.environ.get("TURSO_AUTH_TOKEN", "")
-    return libsql.connect(database=url, auth_token=auth_token)
+
+    if _USE_EXPERIMENTAL_LIBSQL:
+        return libsql.connect(database=url, auth_token=auth_token)
+
+    if url and url.startswith("libsql://"):
+        url = url.replace("libsql://", "https://", 1)
+
+    logger.warning(
+        "libsql_experimental unavailable; using libsql_client sync fallback"
+    )
+    client = libsql_client.create_client_sync(url=url, auth_token=auth_token)
+    return _LibsqlClientConnection(client)
 
 
 def _fetchone_dict(cursor) -> Optional[Dict[str, Any]]:

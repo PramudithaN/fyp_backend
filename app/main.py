@@ -29,8 +29,8 @@ from app.config import (
     SCRAPER_API_KEY,
 )
 from app.models.model_loader import model_artifacts
-from app.database import init_database, add_bulk_prices, add_prediction
-from app.services.price_fetcher import fetch_latest_prices, get_last_n_trading_days, get_market_status
+from app.database import init_database, add_prediction
+from app.services.price_fetcher import get_market_status
 from app.services.prediction import prediction_service
 from app.services.sentiment_service import sentiment_service
 from app.services.scraper_scheduler import (
@@ -143,22 +143,24 @@ async def health_check():
 )
 async def get_prices():
     """
-    Fetch and display current Brent oil price data.
+    Fetch and display current Brent oil price data from database.
 
-    Returns the last 30 trading days of prices from Yahoo Finance.
+    Returns the last 30 trading days of prices stored in Turso.
     """
     try:
-        # Fetch prices
-        all_prices = fetch_latest_prices(lookback_days=60)
-        prices = get_last_n_trading_days(all_prices, n=30)
+        # Fetch prices from database
+        from app.database import get_prices as get_prices_db
+        
+        all_prices = get_prices_db(days=60)
+        prices = all_prices.tail(30)  # Get last 30 days
 
         return PriceDataResponse(
             success=True,
             ticker=BRENT_TICKER,
             data_points=len(prices),
             date_range={
-                "start": str(prices["date"].iloc[0]),
-                "end": str(prices["date"].iloc[-1]),
+                "start": str(prices["date"].iloc[0].date()),
+                "end": str(prices["date"].iloc[-1].date()),
             },
             prices=prices.to_dict(orient="records"),
         )
@@ -181,34 +183,29 @@ async def get_prices():
 )
 async def predict_now():
     """
-    Generate a 14-day forecast based on real-time data.
+    Generate a 14-day forecast based on database data.
 
     This endpoint:
-    1. Fetches current Brent oil prices from Yahoo Finance.
-    2. Automatically gathers missing news sentiments for the last 30 days.
-    3. Analyzes news articles using the custom FinBERT model.
-    4. Generates a multi-step forecast using the ensemble model.
-    """
+    1. Fetches 120 days of historical prices from database (Turso).
+    2. Fetches 120 days of sentiment history from database (Turso).
+    3. Generates a multi-step forecast using the ensemble model.
+    4. Persists the forecast to database.
+    
+    Note: Daily prices and news articles are stored by the scraper/scheduler.
+    No external API calls needed - all data comes from database."""
     try:
         # Generate predictions using the automated end-to-end service
         forecasts = prediction_service.predict()
 
-        # Get latest price for response metadata
-        from app.services.price_fetcher import fetch_latest_prices
+        # Get latest price for response metadata (from database)
+        from app.database import get_prices
 
-        latest_prices = fetch_latest_prices(lookback_days=5)
+        latest_prices = get_prices(days=5)
         last_price = float(latest_prices["price"].iloc[-1])
         last_date = str(latest_prices["date"].iloc[-1].date())
 
-        # Persist prices to DB (upsert last 5 trading days)
-        try:
-            price_records = [
-                {"date": str(row["date"].date()), "price": float(row["price"])}
-                for _, row in latest_prices.iterrows()
-            ]
-            add_bulk_prices(price_records)
-        except Exception as db_err:
-            logger.warning(f"Failed to persist prices: {db_err}")
+        # Note: Prices are already in database from daily scraper/scheduler
+        # No need to re-persist them here
 
         # Persist the forecast run to DB
         try:

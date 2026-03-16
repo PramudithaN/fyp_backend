@@ -100,51 +100,35 @@ def get_last_n_trading_days(prices: pd.DataFrame, n: int = 30) -> pd.DataFrame:
 
 def get_market_status() -> dict:
     """
-    Determine whether the Brent oil market is currently open using the live
-    ``marketState`` field returned by Yahoo Finance for the BZ=F ticker.
+    Determine market status using trading-day logic only.
 
-    Yahoo Finance ``marketState`` values:
-        - ``"REGULAR"``  — regular trading session (market open)
-        - ``"PRE"``      — pre-market session
-        - ``"POST"``     — post-market / after-hours session
-        - ``"CLOSED"``   — market closed (weekend, holiday, etc.)
-        - ``"PREPRE"`` / ``"POSTPOST"`` — extended hours
-
-    Falls back to a weekend/date check if the API call fails.
+    Rule:
+    - Monday to Friday: market open
+    - Saturday/Sunday: market closed
 
     Returns:
         dict with keys:
-            - is_open (bool): True only when ``marketState == "REGULAR"``.
-            - market_state (str): Raw value from Yahoo Finance (or "UNKNOWN").
+            - is_open (bool): True on trading days (Mon-Fri).
+            - market_state (str): "TRADING_DAY" or "NON_TRADING_DAY".
             - message (str): Human-readable status string.
     """
-    try:
-        ticker = yf.Ticker(BRENT_TICKER)
-        market_state = ticker.info.get("marketState", "UNKNOWN")
-        is_open = market_state == "REGULAR"
+    from datetime import date
 
-        state_messages = {
-            "REGULAR": "Market open",
-            "PRE": "Market closed (pre-market session)",
-            "POST": "Market closed (post-market session)",
-            "PREPRE": "Market closed (extended pre-market)",
-            "POSTPOST": "Market closed (extended post-market)",
-            "CLOSED": "Market closed",
+    today = date.today()
+    is_trading_day = today.weekday() < 5
+
+    if is_trading_day:
+        return {
+            "is_open": True,
+            "market_state": "TRADING_DAY",
+            "message": "Market open (trading day)",
         }
-        message = state_messages.get(market_state, f"Market closed (state: {market_state})")
 
-        logger.info(f"Yahoo Finance marketState for {BRENT_TICKER}: {market_state}")
-        return {"is_open": is_open, "market_state": market_state, "message": message}
-
-    except Exception as e:
-        logger.warning(f"Could not fetch market state from Yahoo Finance: {e}. Falling back to date check.")
-
-        # Fallback: weekend check
-        from datetime import date
-        today = date.today()
-        if today.weekday() == 5:  # Saturday
-            return {"is_open": False, "market_state": "UNKNOWN", "message": "Market closed (Saturday)"}
-        return {"is_open": True, "market_state": "UNKNOWN", "message": "Market likely open (fallback)"}
+    return {
+        "is_open": False,
+        "market_state": "NON_TRADING_DAY",
+        "message": "Market closed (non-trading day)",
+    }
 
 
 def validate_price_data(prices: pd.DataFrame, min_days: int = 30) -> bool:

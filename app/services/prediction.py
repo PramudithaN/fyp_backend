@@ -97,11 +97,11 @@ class PredictionService:
         return forecasts
 
     def _handle_price_data(self, prices: pd.DataFrame = None) -> pd.DataFrame:
-        """Handle price data loading and validation."""
+        """Handle price data loading and validation. Fetches from database instead of external API."""
         if prices is None:
-            logger.info("Auto-fetching 120 days of price history...")
-            from app.services.price_fetcher import fetch_latest_prices
-            return fetch_latest_prices(lookback_days=120)
+            logger.info("Auto-fetching 120 days of price history from database...")
+            from app.database import get_prices
+            return get_prices(days=120)
         
         logger.info(f"Using provided price data ({len(prices)} points)")
         if "date" not in prices.columns or "price" not in prices.columns:
