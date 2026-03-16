@@ -34,8 +34,10 @@ from app.database import (
     add_prediction,
     get_actual_vs_predicted_until,
     get_latest_prediction_fan_chart,
+    get_news_articles,
+    get_recent_news_articles,
 )
-from app.services.price_fetcher import get_market_status
+from app.services.price_fetcher import fetch_latest_prices, get_market_status
 from app.services.prediction import prediction_service
 from app.services.sentiment_service import sentiment_service
 from app.services.scraper_scheduler import (
@@ -57,6 +59,7 @@ from app.schemas.prediction import (
     HistoricalPricesResponse,
     HistoricalCombinedFeaturesResponse,
     PredictionFanResponse,
+    NewsArticlesResponse,
 )
 
 # Configure logging
@@ -64,6 +67,34 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+INVALID_DATE_DETAIL = "Invalid date format. Expected YYYY-MM-DD"
+
+
+def _sync_latest_prices(lookback_days: int = 120) -> pd.DataFrame:
+    """Fetch the latest available market prices and upsert them into the database."""
+    from app.database import add_bulk_prices, get_prices as get_prices_db
+
+    try:
+        latest_prices = fetch_latest_prices(lookback_days=lookback_days)
+        records = [
+            {
+                "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                "price": float(row["price"]),
+                "source": "yahoo_finance",
+            }
+            for row in latest_prices[["date", "price"]].to_dict(orient="records")
+        ]
+        if records:
+            add_bulk_prices(records)
+            return pd.DataFrame(records)
+    except Exception as exc:
+        logger.warning("Failed to refresh live prices, falling back to stored data: %s", exc)
+
+    stored_prices = get_prices_db(days=lookback_days)
+    if stored_prices.empty:
+        raise ValueError("No price data available for prediction")
+    return stored_prices
 
 
 def _aggregate_historical_prices(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
@@ -208,15 +239,14 @@ async def health_check():
 )
 async def get_prices():
     """
-    Fetch and display current Brent oil price data from database.
+    Fetch and display the most recent Brent oil price data.
 
-    Returns the last 30 trading days of prices stored in Turso.
+    Refreshes live prices first, then returns the last 30 trading days.
+    Falls back to stored prices if the live refresh fails.
     """
     try:
-        # Fetch prices from database
-        from app.database import get_prices as get_prices_db
-        
-        all_prices = get_prices_db(days=60)
+        all_prices = _sync_latest_prices(lookback_days=60)
+        all_prices = all_prices.sort_values("date").reset_index(drop=True)
         prices = all_prices.tail(30)  # Get last 30 days
 
         return PriceDataResponse(
@@ -232,6 +262,56 @@ async def get_prices():
 
     except Exception as e:
         logger.error(f"Error fetching prices: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/news",
+    response_model=NewsArticlesResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid date format"},
+        500: {"model": ErrorResponse, "description": "Server error fetching news articles"},
+    },
+)
+async def get_news(
+    article_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    days: Annotated[int, Query(ge=1, le=30)] = 7,
+):
+    """
+    Return stored news articles for the frontend.
+
+    If article_date is provided, returns all articles for that exact date.
+    Otherwise returns articles from the most recent N distinct dates.
+    """
+    if article_date is not None:
+        try:
+            datetime.strptime(article_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=INVALID_DATE_DETAIL,
+            )
+
+    try:
+        articles = (
+            get_news_articles(article_date)
+            if article_date is not None
+            else get_recent_news_articles(days=days)
+        )
+        latest_article_date = articles[0]["article_date"] if articles else None
+
+        return NewsArticlesResponse(
+            success=True,
+            total_records=len(articles),
+            requested_date=article_date,
+            days=1 if article_date is not None else days,
+            latest_article_date=latest_article_date,
+            articles=articles,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching news articles: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -393,26 +473,23 @@ async def predict_now():
     Generate a 14-day forecast based on database data.
 
     This endpoint:
-    1. Fetches 120 days of historical prices from database (Turso).
+    1. Refreshes up to 120 days of historical prices from Yahoo Finance into the database.
     2. Fetches 120 days of sentiment history from database (Turso).
     3. Generates a multi-step forecast using the ensemble model.
     4. Persists the forecast to database.
-    
-    Note: Daily prices and news articles are stored by the scraper/scheduler.
-    No external API calls needed - all data comes from database."""
+
+    If the live price refresh fails, prediction falls back to the latest stored prices."""
     try:
-        # Generate predictions using the automated end-to-end service
-        forecasts = prediction_service.predict()
+        latest_prices = _sync_latest_prices(lookback_days=120)
 
-        # Get latest price for response metadata (from database)
-        from app.database import get_prices
+        # Generate predictions using the refreshed price history
+        forecasts = prediction_service.predict(prices=latest_prices)
 
-        latest_prices = get_prices(days=5)
+        latest_prices = latest_prices.sort_values("date").reset_index(drop=True)
         last_price = float(latest_prices["price"].iloc[-1])
-        last_date = str(latest_prices["date"].iloc[-1].date())
+        last_date = pd.to_datetime(latest_prices["date"].iloc[-1]).strftime("%Y-%m-%d")
 
-        # Note: Prices are already in database from daily scraper/scheduler
-        # No need to re-persist them here
+        # Refreshed prices are already persisted by _sync_latest_prices.
 
         # Persist the forecast run to DB
         try:
@@ -490,7 +567,7 @@ async def compare_predictions_with_actuals(
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid date format. Expected YYYY-MM-DD",
+                detail=INVALID_DATE_DETAIL,
             )
 
     try:
@@ -643,7 +720,7 @@ async def scraper_run(
         except ValueError:
             raise HTTPException(
                 status_code=400,
-                detail="Invalid date format. Expected YYYY-MM-DD"
+                detail=INVALID_DATE_DETAIL
             )
     
     try:

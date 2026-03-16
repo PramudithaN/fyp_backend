@@ -66,6 +66,31 @@ class PriceDataResponse(BaseModel):
     prices: List[dict]
 
 
+class NewsArticle(BaseModel):
+    """Single stored news article."""
+
+    id: int
+    article_date: str = Field(..., description=DATE_FMT_DESC)
+    title: str = Field(..., description="Article headline")
+    description: Optional[str] = Field(None, description="Article summary or snippet")
+    url: Optional[str] = Field(None, description="Canonical article URL")
+    source: Optional[str] = Field(None, description="News source name")
+    published_at: Optional[str] = Field(None, description="Original publication timestamp")
+    sentiment_score: Optional[float] = Field(None, description="Per-article sentiment score")
+    created_at: Optional[str] = Field(None, description="Database insertion timestamp")
+
+
+class NewsArticlesResponse(BaseModel):
+    """Response for news articles endpoint."""
+
+    success: bool
+    total_records: int
+    requested_date: Optional[str] = Field(None, description="Exact article date requested")
+    days: int = Field(..., ge=1, description="Number of recent distinct days searched")
+    latest_article_date: Optional[str] = Field(None, description="Latest article date in response")
+    articles: List[NewsArticle]
+
+
 class HealthResponse(BaseModel):
     """Response for health check endpoint."""
 

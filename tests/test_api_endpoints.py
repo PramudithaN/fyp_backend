@@ -40,14 +40,12 @@ class TestRootEndpoint:
 class TestPricesEndpoint:
     """Tests for prices endpoint."""
 
-    @patch("app.main.fetch_latest_prices")
-    @patch("app.main.get_last_n_trading_days")
+    @patch("app.main._sync_latest_prices")
     def test_get_prices_success(
-        self, mock_get_days, mock_fetch, test_client, sample_prices_df
+        self, mock_sync_prices, test_client, sample_prices_df
     ):
         """Test successful price fetch."""
-        mock_fetch.return_value = sample_prices_df
-        mock_get_days.return_value = sample_prices_df
+        mock_sync_prices.return_value = sample_prices_df
 
         response = test_client.get("/prices")
         assert response.status_code == 200
@@ -57,13 +55,82 @@ class TestPricesEndpoint:
         assert "data_points" in data
         assert "prices" in data
         assert len(data["prices"]) > 0
+        mock_sync_prices.assert_called_once_with(lookback_days=60)
 
-    @patch("app.main.fetch_latest_prices")
-    def test_get_prices_error(self, mock_fetch, test_client):
+    @patch("app.main._sync_latest_prices")
+    def test_get_prices_error(self, mock_sync_prices, test_client):
         """Test price fetch handles errors."""
-        mock_fetch.side_effect = Exception("API Error")
+        mock_sync_prices.side_effect = Exception("API Error")
 
         response = test_client.get("/prices")
+        assert response.status_code == 500
+
+
+class TestNewsEndpoint:
+    """Tests for news endpoint."""
+
+    @patch("app.main.get_recent_news_articles")
+    def test_get_recent_news_success(self, mock_get_recent_news, test_client):
+        """Test recent news retrieval for frontend consumption."""
+        mock_get_recent_news.return_value = [
+            {
+                "id": 1,
+                "article_date": "2026-03-16",
+                "title": "Oil prices edge higher",
+                "description": "Brent crude rose on supply concerns.",
+                "url": "https://example.com/oil-1",
+                "source": "Reuters",
+                "published_at": "2026-03-16T09:30:00",
+                "sentiment_score": 0.27,
+            }
+        ]
+
+        response = test_client.get("/news?days=3")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["total_records"] == 1
+        assert data["days"] == 3
+        assert data["latest_article_date"] == "2026-03-16"
+        assert data["articles"][0]["title"] == "Oil prices edge higher"
+        mock_get_recent_news.assert_called_once_with(days=3)
+
+    @patch("app.main.get_news_articles")
+    def test_get_news_by_date_success(self, mock_get_news_articles, test_client):
+        """Test exact-date article retrieval."""
+        mock_get_news_articles.return_value = [
+            {
+                "id": 2,
+                "article_date": "2026-03-15",
+                "title": "OPEC output steady",
+                "description": "Production remained flat this week.",
+                "url": "https://example.com/oil-2",
+                "source": "Bloomberg",
+                "published_at": "2026-03-15T07:00:00",
+                "sentiment_score": -0.05,
+                "created_at": "2026-03-15T08:00:00",
+            }
+        ]
+
+        response = test_client.get("/news?article_date=2026-03-15")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["requested_date"] == "2026-03-15"
+        assert data["days"] == 1
+        assert data["articles"][0]["source"] == "Bloomberg"
+        mock_get_news_articles.assert_called_once_with("2026-03-15")
+
+    def test_get_news_invalid_date(self, test_client):
+        """Test invalid article date validation."""
+        response = test_client.get("/news?article_date=2026-02-30")
+        assert response.status_code == 400
+
+    @patch("app.main.get_recent_news_articles")
+    def test_get_news_server_error(self, mock_get_recent_news, test_client):
+        """Test news endpoint handles storage errors."""
+        mock_get_recent_news.side_effect = Exception("DB Error")
+
+        response = test_client.get("/news")
         assert response.status_code == 500
 
 
@@ -71,13 +138,12 @@ class TestPredictEndpoint:
     """Tests for prediction endpoint."""
 
     @patch("app.main.prediction_service.predict")
-    @patch("app.main.fetch_latest_prices")
+    @patch("app.main._sync_latest_prices")
     def test_predict_success(
-        self, mock_fetch, mock_predict, test_client, sample_prices_df
+        self, mock_sync_prices, mock_predict, test_client, sample_prices_df
     ):
         """Test successful prediction."""
-        # Mock price fetch
-        mock_fetch.return_value = sample_prices_df
+        mock_sync_prices.return_value = sample_prices_df
 
         # Mock prediction result
         mock_forecasts = [
@@ -98,6 +164,9 @@ class TestPredictEndpoint:
         assert "last_price" in data
         assert "forecasts" in data
         assert len(data["forecasts"]) == 14
+        mock_sync_prices.assert_called_once_with(lookback_days=120)
+        synced_prices = mock_predict.call_args.kwargs["prices"]
+        pd.testing.assert_frame_equal(synced_prices, sample_prices_df)
 
     @patch("app.main.prediction_service.predict")
     def test_predict_validation_error(self, mock_predict, test_client):
