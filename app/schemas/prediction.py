@@ -7,10 +7,13 @@ from typing import List, Optional
 from datetime import datetime
 
 
+DATE_FMT_DESC = "Date in YYYY-MM-DD format"
+
+
 class PriceInput(BaseModel):
     """Single price data point."""
 
-    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    date: str = Field(..., description=DATE_FMT_DESC)
     price: float = Field(..., gt=0, description="Brent oil price (USD)")
 
     @field_validator("date")
@@ -86,7 +89,7 @@ class ErrorResponse(BaseModel):
 class SentimentInput(BaseModel):
     """Single sentiment data point."""
 
-    date: str = Field(..., description="Date in YYYY-MM-DD format")
+    date: str = Field(..., description=DATE_FMT_DESC)
     daily_sentiment_decay: float = Field(
         ..., description="Decay-weighted sentiment score"
     )
@@ -130,3 +133,49 @@ class SentimentHistoryResponse(BaseModel):
     total_records: int
     latest_date: Optional[str] = None
     data: List[dict]
+
+
+class PredictionComparisonDay(BaseModel):
+    """Daily actual vs aggregated predicted values."""
+
+    date: str = Field(..., description=DATE_FMT_DESC)
+    actual_price: float = Field(..., description="Actual stored price (USD)")
+    predicted_price: float = Field(
+        ..., description="Aggregated predicted price (horizon-weighted mean)"
+    )
+    predicted_price_median: float = Field(
+        ..., description="Median of all predictions for the day"
+    )
+    predicted_price_latest: float = Field(
+        ..., description="Latest prediction made for the day"
+    )
+    prediction_count: int = Field(
+        ..., ge=1, description="Number of prediction runs contributing to this day"
+    )
+    error: float = Field(..., description="actual_price - predicted_price")
+    abs_error: float = Field(..., description="Absolute prediction error")
+    abs_pct_error: Optional[float] = Field(
+        None, description="Absolute percentage error (%)"
+    )
+
+
+class PredictionComparisonMetrics(BaseModel):
+    """Aggregate performance metrics across compared days."""
+
+    compared_days: int = Field(..., ge=0)
+    mae: Optional[float] = Field(None, description="Mean absolute error")
+    rmse: Optional[float] = Field(None, description="Root mean squared error")
+    mape: Optional[float] = Field(None, description="Mean absolute percentage error")
+
+
+class PredictionComparisonResponse(BaseModel):
+    """Response for actual vs predicted comparison endpoint."""
+
+    success: bool = Field(..., description="Whether comparison succeeded")
+    end_date: str = Field(..., description="Comparison cutoff date")
+    total_days_returned: int = Field(..., ge=0)
+    aggregation_strategy: str = Field(
+        ..., description="How multiple predictions for same date were combined"
+    )
+    metrics: PredictionComparisonMetrics
+    comparison: List[PredictionComparisonDay]

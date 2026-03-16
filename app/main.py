@@ -29,7 +29,7 @@ from app.config import (
     SCRAPER_API_KEY,
 )
 from app.models.model_loader import model_artifacts
-from app.database import init_database, add_prediction
+from app.database import init_database, add_prediction, get_actual_vs_predicted_until
 from app.services.price_fetcher import get_market_status
 from app.services.prediction import prediction_service
 from app.services.sentiment_service import sentiment_service
@@ -41,6 +41,7 @@ from app.services.scraper_scheduler import (
 from app.schemas.prediction import (
     PredictionRequest,
     PredictionResponse,
+    PredictionComparisonResponse,
     PriceDataResponse,
     HealthResponse,
     ErrorResponse,
@@ -236,6 +237,75 @@ async def predict_now():
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Prediction error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/predictions/compare",
+    response_model=PredictionComparisonResponse,
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": "Invalid date format",
+        },
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error during comparison",
+        },
+    },
+)
+async def compare_predictions_with_actuals(
+    start_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    end_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+):
+    """
+    Compare actual stored prices with stored predictions up to a cutoff date.
+
+    If multiple prediction runs include the same target date, predictions are
+    aggregated using a horizon-weighted mean (weight = 1 / horizon), so
+    shorter-horizon forecasts have higher influence.
+
+    Args:
+        start_date: Optional YYYY-MM-DD start date. Defaults to earliest available.
+        end_date: Optional YYYY-MM-DD cutoff date. Defaults to today.
+    """
+    if start_date is not None:
+        try:
+            datetime.strptime(start_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid start_date format. Expected YYYY-MM-DD",
+            )
+
+    if end_date is not None:
+        try:
+            datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid date format. Expected YYYY-MM-DD",
+            )
+
+    try:
+        comparison_data = get_actual_vs_predicted_until(
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        return PredictionComparisonResponse(
+            success=True,
+            end_date=comparison_data["end_date"],
+            total_days_returned=len(comparison_data["rows"]),
+            aggregation_strategy=(
+                "For each date, combine all available predictions using "
+                "horizon-weighted mean (weight = 1/horizon)."
+            ),
+            metrics=comparison_data["metrics"],
+            comparison=comparison_data["rows"],
+        )
+    except Exception as e:
+        logger.error(f"Prediction comparison error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
