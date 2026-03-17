@@ -79,6 +79,7 @@ class TestNewsEndpoint:
                 "title": "Oil prices edge higher",
                 "description": "Brent crude rose on supply concerns.",
                 "url": "https://example.com/oil-1",
+                "image_url": "https://images.pexels.com/photos/1/sample.jpg",
                 "source": "Reuters",
                 "published_at": "2026-03-16T09:30:00",
                 "sentiment_score": 0.27,
@@ -93,6 +94,7 @@ class TestNewsEndpoint:
         assert data["days"] == 3
         assert data["latest_article_date"] == "2026-03-16"
         assert data["articles"][0]["title"] == "Oil prices edge higher"
+        assert data["articles"][0]["image_url"] == "https://images.pexels.com/photos/1/sample.jpg"
         mock_get_recent_news.assert_called_once_with(days=3)
 
     @patch("app.main.get_news_articles")
@@ -105,6 +107,7 @@ class TestNewsEndpoint:
                 "title": "OPEC output steady",
                 "description": "Production remained flat this week.",
                 "url": "https://example.com/oil-2",
+                "image_url": "https://images.pexels.com/photos/2/sample.jpg",
                 "source": "Bloomberg",
                 "published_at": "2026-03-15T07:00:00",
                 "sentiment_score": -0.05,
@@ -118,6 +121,7 @@ class TestNewsEndpoint:
         assert data["requested_date"] == "2026-03-15"
         assert data["days"] == 1
         assert data["articles"][0]["source"] == "Bloomberg"
+        assert data["articles"][0]["image_url"] == "https://images.pexels.com/photos/2/sample.jpg"
         mock_get_news_articles.assert_called_once_with("2026-03-15")
 
     def test_get_news_invalid_date(self, test_client):

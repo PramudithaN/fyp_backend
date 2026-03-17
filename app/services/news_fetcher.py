@@ -12,12 +12,20 @@ SENTIMENT COMPUTATION (matching Colab exactly):
 
 import os
 import math
+import re
 import numpy as np
 import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
-from app.config import NEWSAPI_KEY as CONFIG_NEWSAPI_KEY, SENTIMENT_MODE
+from app.config import (
+    NEWSAPI_KEY as CONFIG_NEWSAPI_KEY,
+    SENTIMENT_MODE,
+    PEXELS_API_KEY,
+    PEXELS_PER_PAGE,
+    PEXELS_TIMEOUT_SECONDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +35,434 @@ NEWSAPI_KEY = CONFIG_NEWSAPI_KEY  # From config.py
 
 # Oil-related search terms (simplified for better results)
 OIL_SEARCH_QUERY = "oil price OR crude oil OR brent OR OPEC"
+PEXELS_SEARCH_URL = "https://api.pexels.com/v1/search"
+MAX_PEXELS_LOOKUPS_PER_RUN = 20
+DEFAULT_IMAGE_QUERY = "energy infrastructure"
+DEFAULT_OIL_QUERY = "oil industry"
+DEFAULT_REFINERY_QUERY = "oil refinery"
+DEFAULT_CRUDE_QUERY = "crude oil"
+
+HEADLINE_STOP_WORDS = {
+    "the",
+    "and",
+    "are",
+    "why",
+    "who",
+    "what",
+    "when",
+    "where",
+    "which",
+    "while",
+    "than",
+    "been",
+    "being",
+    "into",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "will",
+    "have",
+    "after",
+    "amid",
+    "tests",
+    "test",
+    "says",
+    "said",
+    "say",
+    "rise",
+    "rises",
+    "fall",
+    "falls",
+    "new",
+    "latest",
+    "more",
+    "over",
+    "under",
+    "near",
+    "company",
+    "companies",
+    "group",
+    "groups",
+    "firm",
+    "firms",
+    "embracing",
+    "business",
+    "looks",
+    "look",
+    "post",
+    "opportunity",
+    "opportunities",
+}
+
+KEYWORD_SYNONYMS = {
+    "petrol": "oil",
+    "gasoline": "oil",
+    "diesel": "oil",
+    "crude": "oil",
+    "brent": "oil",
+    "opec": "oil",
+    "renewables": "renewable_energy",
+    "renewable": "renewable_energy",
+    "venezuelan": "venezuela",
+    "iranian": "iran",
+    "russian": "russia",
+    "ukrainian": "ukraine",
+    "saudi": "saudi_arabia",
+    "emirati": "uae",
+    "qatari": "qatar",
+    "iraqi": "iraq",
+    "american": "usa",
+    "european": "europe",
+    "chinese": "china",
+    "indian": "india",
+    "sanctions": "sanction",
+    "wars": "war",
+    "prices": "price",
+    "markets": "market",
+    "refinery": "oil_refinery",
+    "refineries": "oil_refinery",
+    "tankers": "oil_tanker",
+    "tanker": "oil_tanker",
+    "pipelines": "gas_pipeline",
+    "pipeline": "gas_pipeline",
+    "lng": "lng_terminal",
+}
+
+KEY_PHRASES = [
+    ("natural gas", "natural_gas"),
+    ("renewable energy", "renewable_energy"),
+    ("energy sector", "energy_sector"),
+    ("oil industry", "oil_industry"),
+    ("oil refinery", "oil_refinery"),
+    ("oil price", "oil_price"),
+    ("fuel price", "fuel_price"),
+    ("lng terminal", "lng_terminal"),
+    ("shipping route", "shipping_route"),
+    ("red sea", "red_sea"),
+    ("strait of hormuz", "strait_of_hormuz"),
+    ("gulf of mexico", "gulf_of_mexico"),
+    ("north sea", "north_sea"),
+    ("middle east", "middle_east"),
+    ("supply cut", "supply_cut"),
+    ("production cut", "production_cut"),
+]
+
+LOCATION_TERMS = {
+    "venezuela",
+    "iran",
+    "russia",
+    "ukraine",
+    "middle_east",
+    "saudi_arabia",
+    "uae",
+    "iraq",
+    "qatar",
+    "china",
+    "india",
+    "europe",
+    "usa",
+    "red_sea",
+    "strait_of_hormuz",
+    "gulf_of_mexico",
+    "north_sea",
+}
+
+THEME_KEYWORDS = {
+    "natural_gas": {"natural_gas", "gas_pipeline", "lng_terminal"},
+    "renewable_energy": {"renewable_energy", "solar", "wind", "power_grid"},
+    "shipping": {"shipping_route", "oil_tanker", "port", "terminal"},
+    "oil": {
+        "oil",
+        "oil_price",
+        "fuel_price",
+        "oil_industry",
+        "oil_refinery",
+        "market",
+        "supply_cut",
+        "production_cut",
+    },
+}
+
+GEOPOLITICAL_TERMS = {
+    "war",
+    "conflict",
+    "sanction",
+    "election",
+    "government",
+    "policy",
+    "tariff",
+    "trade",
+}
+
+THEME_QUERY_TEMPLATES = {
+    "natural_gas": [
+        "natural gas infrastructure",
+        "gas pipeline",
+        "lng terminal",
+    ],
+    "renewable_energy": [
+        "renewable energy infrastructure",
+        "solar wind farm",
+        "energy grid",
+    ],
+    "shipping": [
+        "oil tanker shipping",
+        "energy port terminal",
+        "crude oil tanker",
+    ],
+    "oil": [
+        DEFAULT_OIL_QUERY,
+        DEFAULT_REFINERY_QUERY,
+        DEFAULT_CRUDE_QUERY,
+        "offshore oil platform",
+        "oil pumpjack",
+    ],
+}
+
+BROAD_FALLBACK_IMAGE_QUERIES = [
+    DEFAULT_REFINERY_QUERY,
+    DEFAULT_CRUDE_QUERY,
+    DEFAULT_IMAGE_QUERY,
+]
+
+
+def _dedupe_preserve_order(values: List[str]) -> List[str]:
+    deduped: List[str] = []
+    seen = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return deduped
+
+
+def _format_query_tokens(tokens: List[str]) -> str:
+    return " ".join(token.replace("_", " ") for token in _dedupe_preserve_order(tokens)).strip()
+
+
+def _ordered_phrase_matches(clean_title: str) -> List[str]:
+    phrase_hits: List[Tuple[int, str]] = []
+    for phrase, canonical in KEY_PHRASES:
+        idx = clean_title.find(phrase)
+        if idx >= 0:
+            phrase_hits.append((idx, canonical))
+
+    phrase_hits.sort(key=lambda item: item[0])
+    return [phrase for _, phrase in phrase_hits]
+
+
+def _matched_phrase_words(ordered_phrases: List[str]) -> set[str]:
+    return {
+        token
+        for phrase, canonical in KEY_PHRASES
+        if canonical in ordered_phrases
+        for token in phrase.split()
+    }
+
+
+def _keyword_theme(keyword: str) -> Optional[str]:
+    for theme, terms in THEME_KEYWORDS.items():
+        if keyword in terms:
+            return theme
+    return None
+
+
+def _rank_visual_themes(keywords: List[str]) -> List[str]:
+    themes: List[str] = []
+    for keyword in keywords:
+        theme = _keyword_theme(keyword)
+        if theme and theme not in themes:
+            themes.append(theme)
+
+    if not themes and (set(keywords) & GEOPOLITICAL_TERMS or any(k in LOCATION_TERMS for k in keywords)):
+        themes.append("oil")
+
+    if not themes:
+        themes.append("oil")
+
+    return themes
+
+
+def _expand_query_templates(location: str, templates: List[str]) -> List[str]:
+    prefixed = [f"{location.replace('_', ' ')} {template}" for template in templates] if location else []
+    return [*prefixed, *templates]
+
+
+def _build_structured_image_queries(keywords: List[str]) -> List[str]:
+    """Build energy-specific image queries from normalized headline intent."""
+    location = next((keyword for keyword in keywords if keyword in LOCATION_TERMS), "")
+    themes = _rank_visual_themes(keywords)
+
+    queries: List[str] = []
+    for index, theme in enumerate(themes):
+        templates = THEME_QUERY_TEMPLATES.get(theme, [])
+        if not templates:
+            continue
+
+        include_location = bool(location) and (index == 0 or theme == "oil")
+        queries.extend(_expand_query_templates(location if include_location else "", templates))
+
+    if location and "oil" not in themes:
+        queries.extend(_expand_query_templates(location, THEME_QUERY_TEMPLATES["oil"]))
+
+    queries.extend([DEFAULT_IMAGE_QUERY, DEFAULT_OIL_QUERY])
+    return _dedupe_preserve_order([query for query in queries if query])
+
+
+def _normalize_image_url(url: str) -> str:
+    """Trim tracking params to reduce storage and keep canonical image URLs."""
+    if not url:
+        return ""
+    try:
+        parsed = urlsplit(url.strip())
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    except Exception:
+        return url.strip()
+
+
+def _extract_headline_keywords(title: str) -> List[str]:
+    """Extract key terms from a headline for image search intent."""
+    clean_title = (title or "").lower().replace("'s", "")
+    words = re.findall(r"[a-zA-Z]{3,}", clean_title)
+    ordered_phrases = _ordered_phrase_matches(clean_title)
+    matched_phrase_words = _matched_phrase_words(ordered_phrases)
+
+    seen = set()
+    keywords: List[str] = []
+
+    for phrase in ordered_phrases:
+        if phrase in seen:
+            continue
+        seen.add(phrase)
+        keywords.append(phrase)
+
+    # Keep unique words in order so repeated terms don't dominate.
+    for raw_word in words:
+        if raw_word in matched_phrase_words:
+            continue
+
+        if raw_word in HEADLINE_STOP_WORDS:
+            continue
+
+        word = KEYWORD_SYNONYMS.get(raw_word, raw_word)
+        if word in seen:
+            continue
+
+        seen.add(word)
+        keywords.append(word)
+        if len(keywords) >= 8:
+            break
+
+    return keywords
+
+
+def _build_image_search_query(title: str) -> str:
+    """Build a Pexels query from headline keywords and domain context."""
+    keywords = _extract_headline_keywords(title)
+    queries = _build_structured_image_queries(keywords)
+    if not queries:
+        return DEFAULT_IMAGE_QUERY
+    return queries[0]
+
+
+def _build_fallback_image_queries(title: str) -> List[str]:
+    """Build fallback Pexels queries from specific to broad."""
+    keywords = _extract_headline_keywords(title)
+    candidates = _build_structured_image_queries(keywords)
+
+    # Broad fallbacks for hard-to-match headlines.
+    candidates.extend(BROAD_FALLBACK_IMAGE_QUERIES)
+    return _dedupe_preserve_order([candidate.strip().lower() for candidate in candidates if candidate.strip()])
+
+
+def _get_cached_image_query_result(query: str, cache: Optional[Dict[str, str]]) -> Optional[str]:
+    if cache is None or query not in cache:
+        return None
+    return cache[query]
+
+
+def _lookup_limit_reached(
+    max_new_lookups: Optional[int],
+    lookup_counter: Optional[Dict[str, int]],
+) -> bool:
+    return (
+        max_new_lookups is not None
+        and lookup_counter is not None
+        and lookup_counter.get("count", 0) >= max_new_lookups
+    )
+
+
+def _resolve_image_url_from_headline(
+    title: str,
+    cache: Optional[Dict[str, str]] = None,
+    max_new_lookups: Optional[int] = None,
+    lookup_counter: Optional[Dict[str, int]] = None,
+) -> str:
+    """Resolve an image URL by trying multiple keyword queries for one headline."""
+    queries = _build_fallback_image_queries(title)
+
+    for query in queries:
+        cached_image_url = _get_cached_image_query_result(query, cache)
+        if cached_image_url is not None:
+            if cached_image_url:
+                return cached_image_url
+            continue
+
+        if _lookup_limit_reached(max_new_lookups, lookup_counter):
+            break
+
+        image_url = _fetch_pexels_image_url(query)
+
+        if lookup_counter is not None:
+            lookup_counter["count"] = lookup_counter.get("count", 0) + 1
+
+        if cache is not None:
+            cache[query] = image_url
+
+        if image_url:
+            return image_url
+
+    return ""
+
+
+def _fetch_pexels_image_url(query: str) -> str:
+    """Fetch a relevant free-stock image URL from Pexels."""
+    if not PEXELS_API_KEY:
+        return ""
+
+    import requests
+
+    headers = {"Authorization": PEXELS_API_KEY}
+    params = {
+        "query": query,
+        "per_page": max(1, PEXELS_PER_PAGE),
+        "orientation": "landscape",
+        "size": "medium",
+    }
+
+    try:
+        response = requests.get(
+            PEXELS_SEARCH_URL,
+            headers=headers,
+            params=params,
+            timeout=PEXELS_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        photos = response.json().get("photos", [])
+        if not photos:
+            return ""
+
+        src = photos[0].get("src", {})
+        # Prefer medium-sized image for card usage.
+        return _normalize_image_url(
+            src.get("medium") or src.get("large") or src.get("original") or ""
+        )
+    except Exception as e:
+        logger.debug(f"Pexels lookup failed for query '{query}': {e}")
+        return ""
 
 
 def fetch_oil_news(
@@ -410,13 +846,24 @@ def compute_sentiment_features_with_articles(
     if not all_sentiments:
         all_sentiments = _analyze_with_simple_sentiment(articles)
 
+    image_cache: Dict[str, str] = {}
+    lookup_counter: Dict[str, int] = {"count": 0}
+
     enriched = []
     for article, score in zip(articles, all_sentiments):
+        image_url = _resolve_image_url_from_headline(
+            title=article.get("title", ""),
+            cache=image_cache,
+            max_new_lookups=MAX_PEXELS_LOOKUPS_PER_RUN,
+            lookup_counter=lookup_counter,
+        )
+
         enriched.append(
             {
                 "title": article.get("title", ""),
                 "description": article.get("description", ""),
                 "url": article.get("url"),
+                "image_url": image_url,
                 "source": (
                     article["source"]["name"]
                     if isinstance(article.get("source"), dict)

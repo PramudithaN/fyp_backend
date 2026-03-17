@@ -52,6 +52,11 @@ API_VERSION = "1.0.0"
 # NewsAPI configuration (loaded from environment variables)
 NEWSAPI_KEY = os.getenv("NEWSAPI_KEY", "")
 NEWSDATA_KEY = os.getenv("NEWSDATA_KEY", "")
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
+
+# Pexels fallback image settings
+PEXELS_PER_PAGE = int(os.getenv("PEXELS_PER_PAGE", "1"))
+PEXELS_TIMEOUT_SECONDS = int(os.getenv("PEXELS_TIMEOUT_SECONDS", "10"))
 
 # Scraper API key — protects /scraper/run from unauthorized calls
 # Set this in Render env vars and as SCRAPER_API_KEY GitHub secret

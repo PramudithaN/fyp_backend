@@ -289,6 +289,106 @@ class TestNewsFetcher:
             # Expected to fail without real news sources, test at least runs
             pass
 
+    def test_extract_headline_keywords_smart(self):
+        """Headline keyword extraction should normalize domain terms and keep intent words."""
+        from app.services.news_fetcher import _extract_headline_keywords
+
+        keywords = _extract_headline_keywords(
+            "Trump's Iran war tests US voters' patience as petrol prices rise"
+        )
+
+        assert isinstance(keywords, list)
+        assert "iran" in keywords
+        assert "war" in keywords
+        assert "oil" in keywords  # petrol -> oil normalization
+
+    def test_build_image_search_query_adds_context(self):
+        """Query builder should add oil-domain context for geopolitical headlines."""
+        from app.services.news_fetcher import _build_image_search_query
+
+        query = _build_image_search_query("Iran conflict escalates after sanctions")
+
+        assert isinstance(query, str)
+        assert "oil" in query
+        assert any(term in query for term in ["industry", "refinery", "crude"])
+
+    def test_extract_headline_keywords_filters_noise_and_keeps_domain_terms(self):
+        """Keyword extraction should drop filler words and preserve energy intent."""
+        from app.services.news_fetcher import _extract_headline_keywords
+
+        keywords = _extract_headline_keywords(
+            "Why renewables companies are embracing natural gas"
+        )
+
+        assert "why" not in keywords
+        assert "are" not in keywords
+        assert "companies" not in keywords
+        assert "natural" not in keywords
+        assert "gas" not in keywords
+        assert "natural_gas" in keywords
+        assert "renewable_energy" in keywords
+
+    def test_build_image_search_query_keeps_oil_and_energy_context_for_natural_gas(self):
+        """Natural gas headlines should retain domain context in the primary query."""
+        from app.services.news_fetcher import _build_image_search_query
+
+        query = _build_image_search_query(
+            "Why renewables companies are embracing natural gas"
+        )
+
+        assert isinstance(query, str)
+        assert "natural gas" in query
+        assert any(term in query for term in ["infrastructure", "pipeline", "terminal"])
+
+    def test_extract_headline_keywords_normalizes_venezuela_context(self):
+        """Political-business headlines should normalize location terms and drop filler words."""
+        from app.services.news_fetcher import _extract_headline_keywords
+
+        keywords = _extract_headline_keywords(
+            "Venezuelan business looks to post-Maduro opportunities"
+        )
+
+        assert "venezuela" in keywords
+        assert "business" not in keywords
+        assert "looks" not in keywords
+        assert "post" not in keywords
+        assert "opportunities" not in keywords
+
+    def test_build_fallback_image_queries_bias_to_energy_for_venezuela_politics(self):
+        """Political headlines should resolve to energy-sector queries instead of crowd/event terms."""
+        from app.services.news_fetcher import _build_fallback_image_queries
+
+        queries = _build_fallback_image_queries(
+            "Venezuelan business looks to post-Maduro opportunities"
+        )
+
+        assert queries[0] == "venezuela oil industry"
+        assert "venezuela oil refinery" in queries
+        assert "venezuela crude oil" in queries
+
+    def test_build_image_search_query_prefers_shipping_visuals_for_route_headlines(self):
+        """Shipping headlines should search for tanker and port imagery."""
+        from app.services.news_fetcher import _build_image_search_query
+
+        query = _build_image_search_query(
+            "Red Sea shipping route disruptions hit tanker rates"
+        )
+
+        assert "red sea" in query
+        assert any(term in query for term in ["tanker", "shipping", "port"])
+
+    def test_build_fallback_image_queries_adds_secondary_energy_themes(self):
+        """Mixed-resource headlines should produce queries for both primary and secondary energy themes."""
+        from app.services.news_fetcher import _build_fallback_image_queries
+
+        queries = _build_fallback_image_queries(
+            "Why renewables companies are embracing natural gas"
+        )
+
+        assert queries[0] == "natural gas infrastructure"
+        assert "renewable energy infrastructure" in queries
+        assert "oil industry" in queries
+
 
 class TestFinBERTAnalyzer:
     """Tests for FinBERT sentiment analyzer."""

@@ -74,6 +74,7 @@ class NewsArticle(BaseModel):
     title: str = Field(..., description="Article headline")
     description: Optional[str] = Field(None, description="Article summary or snippet")
     url: Optional[str] = Field(None, description="Canonical article URL")
+    image_url: Optional[str] = Field(None, description="Article image URL")
     source: Optional[str] = Field(None, description="News source name")
     published_at: Optional[str] = Field(None, description="Original publication timestamp")
     sentiment_score: Optional[float] = Field(None, description="Per-article sentiment score")

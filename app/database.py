@@ -141,6 +141,27 @@ def _query_to_df(conn, query: str, params=None) -> pd.DataFrame:
     return pd.DataFrame(cursor.fetchall(), columns=cols)
 
 
+def _table_has_column(cursor, table_name: str, column_name: str) -> bool:
+    """Return True if the given table already contains the target column."""
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    rows = cursor.fetchall() or []
+    return any(len(row) > 1 and row[1] == column_name for row in rows)
+
+
+def _ensure_table_column(
+    cursor,
+    table_name: str,
+    column_name: str,
+    column_sql_type: str,
+) -> None:
+    """Add a missing column to an existing table."""
+    if _table_has_column(cursor, table_name, column_name):
+        return
+    cursor.execute(
+        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql_type}"
+    )
+
+
 def init_database() -> None:
     """Initialize the sentiment database with required tables."""
     logger.info("Initializing Turso database")
@@ -265,12 +286,14 @@ def init_database() -> None:
             title TEXT NOT NULL,
             description TEXT,
             url TEXT UNIQUE,
+            image_url TEXT,
             source TEXT,
             published_at TEXT,
             sentiment_score REAL,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    _ensure_table_column(cursor, "news_articles", "image_url", "TEXT")
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_articles_date ON news_articles(article_date)
     """)
@@ -863,7 +886,7 @@ def add_news_articles(article_date: str, articles: List[Dict[str, Any]]) -> int:
     Store a list of news articles for a given date.
 
     Each article dict should contain:
-        title, description, url, source, published_at, sentiment_score
+        title, description, url, image_url, source, published_at, sentiment_score
     Duplicate URLs are silently ignored (INSERT OR IGNORE).
 
     Returns:
@@ -877,14 +900,15 @@ def add_news_articles(article_date: str, articles: List[Dict[str, Any]]) -> int:
             cursor.execute(
                 """
                 INSERT OR IGNORE INTO news_articles
-                    (article_date, title, description, url, source, published_at, sentiment_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (article_date, title, description, url, image_url, source, published_at, sentiment_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     article_date,
                     art.get("title", ""),
                     art.get("description", ""),
                     art.get("url"),
+                    art.get("image_url"),
                     art.get("source", ""),
                     art.get("published_at", ""),
                     art.get("sentiment_score"),
@@ -909,7 +933,7 @@ def get_news_articles(article_date: str) -> List[Dict[str, Any]]:
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, article_date, title, description, url, source, published_at, sentiment_score, created_at
+        SELECT id, article_date, title, description, url, image_url, source, published_at, sentiment_score, created_at
         FROM news_articles WHERE article_date = ? ORDER BY id
         """,
         (article_date,),
@@ -925,7 +949,7 @@ def get_recent_news_articles(days: int = 7) -> List[Dict[str, Any]]:
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, article_date, title, description, url, source, published_at, sentiment_score
+        SELECT id, article_date, title, description, url, image_url, source, published_at, sentiment_score
         FROM news_articles
         WHERE article_date IN (
             SELECT DISTINCT article_date FROM news_articles ORDER BY article_date DESC LIMIT ?
@@ -937,6 +961,93 @@ def get_recent_news_articles(days: int = 7) -> List[Dict[str, Any]]:
     rows = _fetchall_dicts(cursor)
     conn.close()
     return rows
+
+
+def get_news_articles_missing_image_url(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Return articles that do not yet have an image URL."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    query = """
+        SELECT id, article_date, title, description
+        FROM news_articles
+        WHERE (image_url IS NULL OR TRIM(image_url) = '')
+    """
+    params: List[Any] = []
+
+    if start_date:
+        query += " AND article_date >= ?"
+        params.append(start_date)
+    if end_date:
+        query += " AND article_date <= ?"
+        params.append(end_date)
+
+    query += " ORDER BY article_date ASC, id ASC"
+
+    if limit is not None:
+        query += " LIMIT ?"
+        params.append(limit)
+
+    cursor.execute(query, tuple(params))
+    rows = _fetchall_dicts(cursor)
+    conn.close()
+    return rows
+
+
+def update_news_article_image_url(article_id: int, image_url: str) -> bool:
+    """Update image_url for a specific stored news article row."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "UPDATE news_articles SET image_url = ? WHERE id = ?",
+            (image_url, article_id),
+        )
+        conn.commit()
+        return bool(cursor.rowcount)
+    except Exception as e:
+        logger.error(f"Error updating image_url for article id={article_id}: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def clear_news_article_image_urls(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> int:
+    """Set image_url to NULL for all articles in the given date range.
+
+    Returns the number of rows cleared.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        query = "UPDATE news_articles SET image_url = NULL"
+        params: List[Any] = []
+        if start_date and end_date:
+            query += " WHERE article_date >= ? AND article_date <= ?"
+            params = [start_date, end_date]
+        elif start_date:
+            query += " WHERE article_date >= ?"
+            params = [start_date]
+        elif end_date:
+            query += " WHERE article_date <= ?"
+            params = [end_date]
+        cursor.execute(query, tuple(params))
+        conn.commit()
+        return int(cursor.rowcount or 0)
+    except Exception as e:
+        logger.error(f"Error clearing image_urls ({start_date} → {end_date}): {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
