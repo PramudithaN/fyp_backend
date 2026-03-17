@@ -4,13 +4,84 @@ Price fetcher service - fetches Brent oil prices from Yahoo Finance.
 
 import yfinance as yf
 import pandas as pd
+import os
 from datetime import datetime, timedelta, UTC
 from typing import Optional, Dict, Any
 import logging
+from threading import RLock
+from time import monotonic
 
 from app.config import BRENT_TICKER
 
 logger = logging.getLogger(__name__)
+
+_LATEST_PRICES_CACHE_TTL_SECONDS = 120.0
+_LIVE_SNAPSHOT_CACHE_TTL_SECONDS = 20.0
+_prices_cache_lock = RLock()
+_prices_cache: Dict[tuple[int, str], tuple[float, pd.DataFrame]] = {}
+_snapshot_cache_lock = RLock()
+_snapshot_cache: Optional[tuple[float, Dict[str, Any]]] = None
+
+
+def _cache_enabled() -> bool:
+    """Disable in-memory caching during pytest to preserve deterministic mocks."""
+    return "PYTEST_CURRENT_TEST" not in os.environ
+
+
+def _get_cached_snapshot() -> Optional[Dict[str, Any]]:
+    if not _cache_enabled():
+        return None
+
+    now_ts = monotonic()
+    with _snapshot_cache_lock:
+        if _snapshot_cache and (now_ts - _snapshot_cache[0]) < _LIVE_SNAPSHOT_CACHE_TTL_SECONDS:
+            return _snapshot_cache[1].copy()
+    return None
+
+
+def _set_cached_snapshot(snapshot: Dict[str, Any]) -> None:
+    global _snapshot_cache
+
+    if not _cache_enabled():
+        return
+
+    with _snapshot_cache_lock:
+        _snapshot_cache = (monotonic(), snapshot.copy())
+
+
+def _build_intraday_snapshot(intraday: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    if intraday is None or intraday.empty:
+        return None
+
+    last_row = intraday.iloc[-1]
+    price = float(last_row.get("Close", 0.0))
+    if price <= 0:
+        return None
+
+    last_ts = pd.to_datetime(intraday.index[-1]).tz_localize(None)
+    return {
+        "price": price,
+        "as_of": last_ts.isoformat(),
+        "as_of_date": last_ts.strftime("%Y-%m-%d"),
+        "source": "yahoo_finance_intraday",
+    }
+
+
+def _build_fast_info_snapshot(fast_info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not fast_info:
+        return None
+
+    fallback_price = fast_info.get("lastPrice") or fast_info.get("regularMarketPreviousClose")
+    if not fallback_price:
+        return None
+
+    now_ts = datetime.now(UTC)
+    return {
+        "price": float(fallback_price),
+        "as_of": now_ts.isoformat(),
+        "as_of_date": now_ts.strftime("%Y-%m-%d"),
+        "source": "yahoo_finance_fast_info",
+    }
 
 
 def fetch_latest_prices(
@@ -33,6 +104,14 @@ def fetch_latest_prices(
         ValueError: If unable to fetch sufficient price data
     """
     logger.info(f"Fetching Brent oil prices (ticker: {BRENT_TICKER})")
+
+    cache_key = (lookback_days, end_date.date().isoformat() if end_date else "today")
+    if _cache_enabled():
+        now_ts = monotonic()
+        with _prices_cache_lock:
+            cached = _prices_cache.get(cache_key)
+            if cached and (now_ts - cached[0]) < _LATEST_PRICES_CACHE_TTL_SECONDS:
+                return cached[1].copy()
 
     if end_date is None:
         # Use UTC to avoid local DST gaps (e.g., 02:xx on DST start)
@@ -76,6 +155,10 @@ def fetch_latest_prices(
             raise ValueError(
                 f"Insufficient data: got {len(prices)} days, need at least {min_expected} for a {lookback_days} day window"
             )
+
+        if _cache_enabled():
+            with _prices_cache_lock:
+                _prices_cache[cache_key] = (monotonic(), prices.copy())
 
         return prices
 
@@ -164,33 +247,21 @@ def fetch_live_price_snapshot() -> Optional[Dict[str, Any]]:
     This function does not persist intraday prices. Database persistence remains
     based on completed daily closes from fetch_latest_prices().
     """
+    cached_snapshot = _get_cached_snapshot()
+    if cached_snapshot is not None:
+        return cached_snapshot
+
     try:
         ticker = yf.Ticker(BRENT_TICKER)
         intraday = ticker.history(period="1d", interval="1m", prepost=True)
 
-        if intraday is not None and not intraday.empty:
-            last_row = intraday.iloc[-1]
-            price = float(last_row.get("Close", 0.0))
-            last_ts = pd.to_datetime(intraday.index[-1]).tz_localize(None)
-            if price > 0:
-                return {
-                    "price": price,
-                    "as_of": last_ts.isoformat(),
-                    "as_of_date": last_ts.strftime("%Y-%m-%d"),
-                    "source": "yahoo_finance_intraday",
-                }
+        snapshot = _build_intraday_snapshot(intraday)
+        if snapshot is None:
+            snapshot = _build_fast_info_snapshot(getattr(ticker, "fast_info", None))
 
-        fast_info = getattr(ticker, "fast_info", None)
-        if fast_info:
-            fallback_price = fast_info.get("lastPrice") or fast_info.get("regularMarketPreviousClose")
-            if fallback_price:
-                now_ts = datetime.now(UTC)
-                return {
-                    "price": float(fallback_price),
-                    "as_of": now_ts.isoformat(),
-                    "as_of_date": now_ts.strftime("%Y-%m-%d"),
-                    "source": "yahoo_finance_fast_info",
-                }
+        if snapshot is not None:
+            _set_cached_snapshot(snapshot)
+            return snapshot
     except Exception as exc:
         logger.warning("Failed to fetch live price snapshot: %s", exc)
 

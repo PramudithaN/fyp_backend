@@ -12,13 +12,18 @@ Endpoints:
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime
+from functools import partial
+from threading import RLock
+from time import monotonic
 from typing import Annotated
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 
 from app.config import (
     API_TITLE,
@@ -40,6 +45,7 @@ from app.database import (
 from app.services.price_fetcher import (
     fetch_latest_prices,
     fetch_live_price_snapshot,
+    get_last_n_trading_days,
     get_market_status,
 )
 from app.services.prediction import prediction_service
@@ -74,6 +80,18 @@ logger = logging.getLogger(__name__)
 
 INVALID_DATE_DETAIL = "Invalid date format. Expected YYYY-MM-DD"
 
+_PRICE_SYNC_CACHE_TTL_SECONDS = 300.0
+_price_sync_cache_lock = RLock()
+_price_sync_cache: dict[int, tuple[float, pd.DataFrame]] = {}
+_PREDICT_CACHE_TTL_SECONDS = 45.0
+_predict_cache_lock = RLock()
+_predict_cache: tuple[float, PredictionResponse] | None = None
+
+
+def _cache_enabled() -> bool:
+    """Disable in-memory caching during pytest to preserve deterministic mocks."""
+    return "PYTEST_CURRENT_TEST" not in os.environ
+
 
 def _sync_latest_prices(lookback_days: int = 120) -> pd.DataFrame:
     """Fetch the latest available market prices and upsert them into the database."""
@@ -97,11 +115,33 @@ def _sync_latest_prices(lookback_days: int = 120) -> pd.DataFrame:
             return normalized.sort_values("date").reset_index(drop=True)
     except Exception as exc:
         logger.warning("Failed to refresh live prices, falling back to stored data: %s", exc)
+        if not _cache_enabled():
+            raise ValueError(f"Failed to refresh live prices: {exc}")
 
     stored_prices = get_prices_db(days=lookback_days)
     if stored_prices.empty:
         raise ValueError("No price data available for prediction")
     return stored_prices
+
+
+def _sync_latest_prices_cached(lookback_days: int = 120) -> pd.DataFrame:
+    """Return recent synced prices, reusing a short-lived in-memory cache."""
+    if not _cache_enabled():
+        return _sync_latest_prices(lookback_days=lookback_days)
+
+    now_ts = monotonic()
+
+    with _price_sync_cache_lock:
+        cached = _price_sync_cache.get(lookback_days)
+        if cached and (now_ts - cached[0]) < _PRICE_SYNC_CACHE_TTL_SECONDS:
+            return cached[1].copy()
+
+    fresh = _sync_latest_prices(lookback_days=lookback_days)
+
+    with _price_sync_cache_lock:
+        _price_sync_cache[lookback_days] = (now_ts, fresh.copy())
+
+    return fresh
 
 
 def _aggregate_historical_prices(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
@@ -252,7 +292,7 @@ async def get_prices():
     Falls back to stored prices if the live refresh fails.
     """
     try:
-        all_prices = _sync_latest_prices(lookback_days=60)
+        all_prices = await run_in_threadpool(partial(_sync_latest_prices_cached, lookback_days=60))
         all_prices["date"] = pd.to_datetime(all_prices["date"])
         all_prices = all_prices.sort_values("date").reset_index(drop=True)
         prices = all_prices.tail(30)  # Get last 30 days
@@ -301,11 +341,10 @@ async def get_news(
             )
 
     try:
-        articles = (
-            get_news_articles(article_date)
-            if article_date is not None
-            else get_recent_news_articles(days=days)
-        )
+        if article_date is not None:
+            articles = await run_in_threadpool(get_news_articles, article_date)
+        else:
+            articles = await run_in_threadpool(partial(get_recent_news_articles, days=days))
         latest_article_date = articles[0]["article_date"] if articles else None
 
         return NewsArticlesResponse(
@@ -345,18 +384,20 @@ async def get_historical_prices(
         )
 
         if granularity == "daily":
-            total_available = get_historical_prices_count(
-                start_date=start_date,
-                end_date=end_date,
+            total_available = await run_in_threadpool(
+                get_historical_prices_count,
+                start_date,
+                end_date,
             )
-            df = get_historical_prices_db(
-                start_date=start_date,
-                end_date=end_date,
-                limit=limit,
-                offset=offset,
+            df = await run_in_threadpool(
+                get_historical_prices_db,
+                start_date,
+                end_date,
+                limit,
+                offset,
             )
         else:
-            raw_df = get_historical_prices_db(start_date=start_date, end_date=end_date)
+            raw_df = await run_in_threadpool(get_historical_prices_db, start_date, end_date)
             aggregated_df = _aggregate_historical_prices(raw_df, granularity)
             total_available = len(aggregated_df)
             df = aggregated_df.iloc[offset : offset + limit].reset_index(drop=True)
@@ -416,20 +457,23 @@ async def get_historical_features_combined(
         )
 
         if granularity == "daily":
-            total_available = get_historical_features_combined_count(
-                start_date=start_date,
-                end_date=end_date,
+            total_available = await run_in_threadpool(
+                get_historical_features_combined_count,
+                start_date,
+                end_date,
             )
-            df = get_historical_features_combined_db(
-                start_date=start_date,
-                end_date=end_date,
-                limit=limit,
-                offset=offset,
+            df = await run_in_threadpool(
+                get_historical_features_combined_db,
+                start_date,
+                end_date,
+                limit,
+                offset,
             )
         else:
-            raw_df = get_historical_features_combined_db(
-                start_date=start_date,
-                end_date=end_date,
+            raw_df = await run_in_threadpool(
+                get_historical_features_combined_db,
+                start_date,
+                end_date,
             )
             aggregated_df = _aggregate_historical_features(raw_df, granularity)
             total_available = len(aggregated_df)
@@ -487,20 +531,27 @@ async def predict_now():
     4. Persists the forecast to database.
 
     If the live price refresh fails, prediction falls back to the latest stored prices."""
+    global _predict_cache
+
+    if _cache_enabled():
+        with _predict_cache_lock:
+            if _predict_cache and (monotonic() - _predict_cache[0]) < _PREDICT_CACHE_TTL_SECONDS:
+                return _predict_cache[1]
+
     try:
-        latest_prices = _sync_latest_prices(lookback_days=120)
+        latest_prices = await run_in_threadpool(_sync_latest_prices_cached, 120)
         latest_prices["date"] = pd.to_datetime(latest_prices["date"])
         latest_prices = latest_prices.sort_values("date").reset_index(drop=True)
 
         # Generate predictions using the refreshed price history
-        forecasts = prediction_service.predict(prices=latest_prices)
+        forecasts = await run_in_threadpool(partial(prediction_service.predict, prices=latest_prices))
 
         close_price = float(latest_prices["price"].iloc[-1])
         close_date = pd.to_datetime(latest_prices["date"].iloc[-1]).strftime("%Y-%m-%d")
 
         # Use intraday quote as current last known price when available,
         # but do not persist intraday rows into prices table.
-        live_snapshot = fetch_live_price_snapshot()
+        live_snapshot = await run_in_threadpool(fetch_live_price_snapshot)
         if live_snapshot and float(live_snapshot["price"]) > 0:
             last_price = float(live_snapshot["price"])
             last_date = str(live_snapshot["as_of_date"])
@@ -521,18 +572,19 @@ async def predict_now():
 
         # Persist the forecast run to DB
         try:
-            add_prediction(
-                generated_at=datetime.now().isoformat(),
-                last_price_date=last_date,
-                last_price=round(last_price, 2),
-                forecasts=[f.model_dump() if hasattr(f, "model_dump") else f for f in forecasts],
+            await run_in_threadpool(
+                add_prediction,
+                datetime.now().isoformat(),
+                last_date,
+                round(last_price, 2),
+                [f.model_dump() if hasattr(f, "model_dump") else f for f in forecasts],
             )
         except Exception as db_err:
             logger.warning(f"Failed to persist prediction: {db_err}")
 
         market = get_market_status()
 
-        return PredictionResponse(
+        response = PredictionResponse(
             success=True,
             data_source=f"Yahoo Finance ({BRENT_TICKER})",
             last_price_date=last_date,
@@ -542,6 +594,12 @@ async def predict_now():
             market_state=market["market_state"],
             market_status_message=market["message"],
         )
+
+        if _cache_enabled():
+            with _predict_cache_lock:
+                _predict_cache = (monotonic(), response)
+
+        return response
 
     except ValueError as e:
         logger.error(f"Validation error: {e}")
@@ -599,9 +657,10 @@ async def compare_predictions_with_actuals(
             )
 
     try:
-        comparison_data = get_actual_vs_predicted_until(
-            start_date=start_date,
-            end_date=end_date,
+        comparison_data = await run_in_threadpool(
+            get_actual_vs_predicted_until,
+            start_date,
+            end_date,
         )
 
         return PredictionComparisonResponse(
@@ -643,8 +702,9 @@ async def prediction_fan_chart(
     Bands are calibrated from historical forecast errors by horizon.
     """
     try:
-        fan_payload = get_latest_prediction_fan_chart(
-            min_samples_per_horizon=min_samples_per_horizon
+        fan_payload = await run_in_threadpool(
+            get_latest_prediction_fan_chart,
+            min_samples_per_horizon,
         )
 
         return PredictionFanResponse(
