@@ -658,9 +658,11 @@ async def compare_predictions_with_actuals(
 
     try:
         comparison_data = await run_in_threadpool(
-            get_actual_vs_predicted_until,
-            start_date,
-            end_date,
+            partial(
+                get_actual_vs_predicted_until,
+                end_date=end_date,
+                start_date=start_date,
+            )
         )
 
         return PredictionComparisonResponse(
