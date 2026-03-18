@@ -963,6 +963,128 @@ def get_historical_prices_count(
     return int(count)
 
 
+def get_historical_prices_paginated(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> tuple:
+    """
+    Return paginated historical prices *and* total row count in a single
+    Turso round-trip using a window function.
+
+    Returns:
+        (df, total_count)
+    """
+    conditions: List[str] = []
+    where_params: List[Any] = []
+
+    if start_date:
+        conditions.append("date >= ?")
+        where_params.append(start_date)
+    if end_date:
+        conditions.append("date <= ?")
+        where_params.append(end_date)
+
+    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    query = f"""
+        SELECT date, price, open, high, low, volume, change_pct, source,
+               COUNT(*) OVER() AS total_count
+        FROM historical_prices
+        {where_clause}
+        ORDER BY date
+        LIMIT ? OFFSET ?
+    """
+    params = tuple(where_params) + (limit, offset)
+
+    conn = get_connection()
+    df = _query_to_df(conn, query, params)
+    conn.close()
+
+    if df.empty:
+        return df, 0
+
+    total_count = int(df["total_count"].iloc[0])
+    df = df.drop(columns=["total_count"])
+    df["date"] = pd.to_datetime(df["date"])
+    return df, total_count
+
+
+def get_historical_prices_aggregated(
+    granularity: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: int = 500,
+    offset: int = 0,
+) -> tuple:
+    """
+    Aggregate historical prices at the DB level (weekly or monthly) with
+    LIMIT/OFFSET pagination, returning (df, total_count) in one round-trip.
+
+    This avoids fetching all rows into Python for server-side slicing.
+    """
+    fmt = "%Y-%W" if granularity == "weekly" else "%Y-%m"
+
+    conditions: List[str] = []
+    where_params: List[Any] = []
+
+    if start_date:
+        conditions.append("date >= ?")
+        where_params.append(start_date)
+    if end_date:
+        conditions.append("date <= ?")
+        where_params.append(end_date)
+
+    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    # Use CTEs to:
+    # 1. rank rows within each period so we can pick first/last for open/close
+    # 2. aggregate per period
+    # 3. paginate + attach total count in one shot
+    query = f"""
+        WITH ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (PARTITION BY strftime('{fmt}', date) ORDER BY date ASC)  AS rn_asc,
+                   ROW_NUMBER() OVER (PARTITION BY strftime('{fmt}', date) ORDER BY date DESC) AS rn_desc
+            FROM historical_prices
+            {where_clause}
+        ),
+        agg AS (
+            SELECT
+                MIN(date)                                               AS date,
+                MAX(CASE WHEN rn_asc  = 1 THEN open  END)              AS open,
+                MAX(high)                                               AS high,
+                MIN(low)                                                AS low,
+                MAX(CASE WHEN rn_desc = 1 THEN price END)              AS price,
+                SUM(volume)                                             AS volume,
+                AVG(change_pct)                                         AS change_pct,
+                MIN(source)                                             AS source
+            FROM ranked
+            GROUP BY strftime('{fmt}', date)
+        )
+        SELECT date, price, open, high, low, volume, change_pct, source,
+               COUNT(*) OVER() AS total_count
+        FROM agg
+        ORDER BY date
+        LIMIT ? OFFSET ?
+    """
+    # where_params go into the CTE inner query; limit/offset go to the outer query
+    params = tuple(where_params) + (limit, offset)
+
+    conn = get_connection()
+    df = _query_to_df(conn, query, params)
+    conn.close()
+
+    if df.empty:
+        return df, 0
+
+    total_count = int(df["total_count"].iloc[0])
+    df = df.drop(columns=["total_count"])
+    df["date"] = pd.to_datetime(df["date"])
+    return df, total_count
+
+
 # ---------------------------------------------------------------------------
 # News article functions
 # ---------------------------------------------------------------------------

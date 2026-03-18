@@ -569,28 +569,29 @@ async def get_historical_prices(
     """Return imported historical price records from historical_prices table."""
     try:
         from app.database import (
-            get_historical_prices as get_historical_prices_db,
-            get_historical_prices_count,
+            get_historical_prices_paginated,
+            get_historical_prices_aggregated,
         )
 
         if granularity == "daily":
-            total_available = await run_in_threadpool(
-                get_historical_prices_count,
-                start_date,
-                end_date,
-            )
-            df = await run_in_threadpool(
-                get_historical_prices_db,
+            # Single Turso round-trip: data + total count via window function
+            df, total_available = await run_in_threadpool(
+                get_historical_prices_paginated,
                 start_date,
                 end_date,
                 limit,
                 offset,
             )
         else:
-            raw_df = await run_in_threadpool(get_historical_prices_db, start_date, end_date)
-            aggregated_df = _aggregate_historical_prices(raw_df, granularity)
-            total_available = len(aggregated_df)
-            df = aggregated_df.iloc[offset : offset + limit].reset_index(drop=True)
+            # DB-level aggregation + pagination: no full-table fetch into Python
+            df, total_available = await run_in_threadpool(
+                get_historical_prices_aggregated,
+                granularity,
+                start_date,
+                end_date,
+                limit,
+                offset,
+            )
 
         if df.empty:
             return HistoricalPricesResponse(
