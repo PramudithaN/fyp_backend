@@ -16,7 +16,7 @@ services:
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml.template:ro
       - prometheus_data:/prometheus
-    command: >
+    command: |
       -c '
       : "$${HF_SPACE_TARGET:?HF_SPACE_TARGET is required}";
       : "$${GRAFANA_REMOTE_WRITE_URL:?GRAFANA_REMOTE_WRITE_URL is required}";

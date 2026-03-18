@@ -46,9 +46,9 @@ Configure the application using environment variables (create a `.env` file):
 | `NEWSDATA_KEY` | - | NewsData.io API key for news fetching |
 | `SENTIMENT_MODE` | `finbert` | Sentiment analysis mode: `simple` or `finbert` |
 | `SKIP_FINBERT_PRELOAD` | `false` | Skip FinBERT model preloading at startup (set to `true` for deployments without HuggingFace access) |
-| `SCRAPER_ENABLED` | `true` | Enable/disable the daily news scraper |
-| `SCRAPER_SCHEDULE_HOUR` | `6` | Hour (0-23) to run daily news scraper |
-| `SCRAPER_SCHEDULE_MINUTE` | `0` | Minute (0-59) to run daily news scraper |
+| `PREDICT_CACHE_TTL_SECONDS` | `45` | In-memory TTL (seconds) for the latest forecast returned by `/predict` |
+| `PREDICTION_PRECOMPUTE_ENABLED` | `true` | Enables background forecast refresh so `/predict` can return warm cached responses |
+| `PREDICTION_PRECOMPUTE_INTERVAL_SECONDS` | `900` | Background precompute interval in seconds (default 15 minutes) |
 | `HF_SPACE_TARGET` | - | Hugging Face Space host used by local Prometheus scraper (e.g., `your-space.hf.space`) |
 | `GRAFANA_REMOTE_WRITE_URL` | - | Grafana Cloud Prometheus remote-write endpoint |
 | `GRAFANA_METRICS_USER_ID` | - | Grafana Cloud metrics username |
@@ -60,7 +60,6 @@ NEWSAPI_KEY=your_api_key_here
 NEWSDATA_KEY=your_api_key_here
 SENTIMENT_MODE=finbert
 SKIP_FINBERT_PRELOAD=false
-SCRAPER_ENABLED=true
 ```
 
 ### FinBERT Model Loading

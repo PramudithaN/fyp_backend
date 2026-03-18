@@ -13,6 +13,7 @@ Endpoints:
 
 import logging
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from functools import partial
@@ -31,6 +32,9 @@ from app.config import (
     API_DESCRIPTION,
     API_VERSION,
     BRENT_TICKER,
+    PREDICT_CACHE_TTL_SECONDS,
+    PREDICTION_PRECOMPUTE_ENABLED,
+    PREDICTION_PRECOMPUTE_INTERVAL_SECONDS,
     SKIP_FINBERT_PRELOAD,
     SCRAPER_API_KEY,
 )
@@ -84,9 +88,117 @@ INVALID_DATE_DETAIL = "Invalid date format. Expected YYYY-MM-DD"
 _PRICE_SYNC_CACHE_TTL_SECONDS = 300.0
 _price_sync_cache_lock = RLock()
 _price_sync_cache: dict[int, tuple[float, pd.DataFrame]] = {}
-_PREDICT_CACHE_TTL_SECONDS = 45.0
+_PREDICT_CACHE_TTL_SECONDS = PREDICT_CACHE_TTL_SECONDS
 _predict_cache_lock = RLock()
 _predict_cache: tuple[float, PredictionResponse] | None = None
+_prediction_refresh_lock = asyncio.Lock()
+
+
+async def _build_prediction_response(persist_forecast: bool = True) -> PredictionResponse:
+    """Run full prediction pipeline and build API response payload."""
+    latest_prices = await run_in_threadpool(_sync_latest_prices_cached, 120)
+    latest_prices["date"] = pd.to_datetime(latest_prices["date"])
+    latest_prices = latest_prices.sort_values("date").reset_index(drop=True)
+
+    # Generate predictions using the refreshed price history.
+    forecasts = await run_in_threadpool(partial(prediction_service.predict, prices=latest_prices))
+
+    close_price = float(latest_prices["price"].iloc[-1])
+    close_date = pd.to_datetime(latest_prices["date"].iloc[-1]).strftime("%Y-%m-%d")
+
+    # Use intraday quote as current last known price when available,
+    # but do not persist intraday rows into prices table.
+    live_snapshot = await run_in_threadpool(fetch_live_price_snapshot)
+    if live_snapshot and float(live_snapshot["price"]) > 0:
+        last_price = float(live_snapshot["price"])
+        last_date = str(live_snapshot["as_of_date"])
+        if close_price > 0:
+            scale = last_price / close_price
+            forecasts = [
+                {
+                    **f,
+                    "forecasted_price": round(float(f["forecasted_price"]) * scale, 2),
+                }
+                for f in forecasts
+            ]
+    else:
+        last_price = close_price
+        last_date = close_date
+
+    if persist_forecast:
+        try:
+            await run_in_threadpool(
+                add_prediction,
+                datetime.now().isoformat(),
+                last_date,
+                round(last_price, 2),
+                [f.model_dump() if hasattr(f, "model_dump") else f for f in forecasts],
+            )
+        except Exception as db_err:
+            logger.warning(f"Failed to persist prediction: {db_err}")
+
+    market = await run_in_threadpool(get_market_status)
+
+    return PredictionResponse(
+        success=True,
+        data_source=f"Yahoo Finance ({BRENT_TICKER})",
+        last_price_date=last_date,
+        last_price=round(last_price, 2),
+        forecasts=forecasts,
+        is_market_open=market["is_open"],
+        market_state=market["market_state"],
+        market_status_message=market["message"],
+    )
+
+
+async def _refresh_prediction_cache(
+    *,
+    force_refresh: bool,
+    persist_forecast: bool,
+) -> PredictionResponse:
+    """Return warm prediction data and serialize expensive refresh work."""
+    global _predict_cache
+
+    if _cache_enabled() and not force_refresh:
+        with _predict_cache_lock:
+            if _predict_cache and (monotonic() - _predict_cache[0]) < _PREDICT_CACHE_TTL_SECONDS:
+                return _predict_cache[1]
+
+    async with _prediction_refresh_lock:
+        if _cache_enabled() and not force_refresh:
+            with _predict_cache_lock:
+                if _predict_cache and (monotonic() - _predict_cache[0]) < _PREDICT_CACHE_TTL_SECONDS:
+                    return _predict_cache[1]
+
+        response = await _build_prediction_response(persist_forecast=persist_forecast)
+
+        if _cache_enabled():
+            with _predict_cache_lock:
+                _predict_cache = (monotonic(), response)
+
+        return response
+
+
+async def _prediction_precompute_loop(stop_event: asyncio.Event):
+    """Refresh prediction cache on a fixed interval to reduce request-time latency."""
+    interval_seconds = max(PREDICTION_PRECOMPUTE_INTERVAL_SECONDS, 60)
+    logger.info(
+        "Prediction precompute loop started (interval=%ss)",
+        interval_seconds,
+    )
+
+    while not stop_event.is_set():
+        try:
+            await _refresh_prediction_cache(force_refresh=True, persist_forecast=True)
+        except Exception as exc:
+            logger.warning("Background prediction precompute failed: %s", exc, exc_info=True)
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+        except asyncio.TimeoutError:
+            continue
+
+    logger.info("Prediction precompute loop stopped")
 
 
 def _cache_enabled() -> bool:
@@ -205,10 +317,12 @@ def _aggregate_historical_features(df: pd.DataFrame, granularity: str) -> pd.Dat
 async def lifespan(app: FastAPI):
     """Load models and initialize database on startup."""
     logger.info("Starting application...")
+    precompute_task: asyncio.Task | None = None
+    precompute_stop_event = asyncio.Event()
     
     # Initialize sentiment database
     try:
-        init_database()
+        await run_in_threadpool(init_database)
         logger.info("Sentiment database initialized!")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}", exc_info=True)
@@ -216,7 +330,7 @@ async def lifespan(app: FastAPI):
 
     # Load ML models
     try:
-        model_artifacts.load_all()
+        await run_in_threadpool(model_artifacts.load_all)
         logger.info("Models loaded successfully!")
     except Exception as e:
         logger.error(f"Model loading failed: {e}", exc_info=True)
@@ -227,7 +341,7 @@ async def lifespan(app: FastAPI):
         try:
             from app.services.finbert_analyzer import preload_model
 
-            preload_model()
+            await run_in_threadpool(preload_model)
             logger.info("FinBERT model pre-loaded successfully")
         except Exception as e:
             logger.warning(f"FinBERT preload failed: {e}", exc_info=True)
@@ -235,9 +349,21 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("FinBERT preload skipped (SKIP_FINBERT_PRELOAD=true)")
 
+    if PREDICTION_PRECOMPUTE_ENABLED and _cache_enabled():
+        precompute_task = asyncio.create_task(_prediction_precompute_loop(precompute_stop_event))
+        logger.info("Prediction precompute enabled")
+    else:
+        logger.info("Prediction precompute disabled")
+
     logger.info("Application startup completed successfully")
 
     yield
+    precompute_stop_event.set()
+    if precompute_task is not None:
+        try:
+            await precompute_task
+        except Exception as exc:
+            logger.warning("Prediction precompute task shutdown failed: %s", exc)
     logger.info("Application shutting down...")
 
 
@@ -535,75 +661,8 @@ async def predict_now():
     4. Persists the forecast to database.
 
     If the live price refresh fails, prediction falls back to the latest stored prices."""
-    global _predict_cache
-
-    if _cache_enabled():
-        with _predict_cache_lock:
-            if _predict_cache and (monotonic() - _predict_cache[0]) < _PREDICT_CACHE_TTL_SECONDS:
-                return _predict_cache[1]
-
     try:
-        latest_prices = await run_in_threadpool(_sync_latest_prices_cached, 120)
-        latest_prices["date"] = pd.to_datetime(latest_prices["date"])
-        latest_prices = latest_prices.sort_values("date").reset_index(drop=True)
-
-        # Generate predictions using the refreshed price history
-        forecasts = await run_in_threadpool(partial(prediction_service.predict, prices=latest_prices))
-
-        close_price = float(latest_prices["price"].iloc[-1])
-        close_date = pd.to_datetime(latest_prices["date"].iloc[-1]).strftime("%Y-%m-%d")
-
-        # Use intraday quote as current last known price when available,
-        # but do not persist intraday rows into prices table.
-        live_snapshot = await run_in_threadpool(fetch_live_price_snapshot)
-        if live_snapshot and float(live_snapshot["price"]) > 0:
-            last_price = float(live_snapshot["price"])
-            last_date = str(live_snapshot["as_of_date"])
-            if close_price > 0:
-                scale = last_price / close_price
-                forecasts = [
-                    {
-                        **f,
-                        "forecasted_price": round(float(f["forecasted_price"]) * scale, 2),
-                    }
-                    for f in forecasts
-                ]
-        else:
-            last_price = close_price
-            last_date = close_date
-
-        # Refreshed prices are already persisted by _sync_latest_prices.
-
-        # Persist the forecast run to DB
-        try:
-            await run_in_threadpool(
-                add_prediction,
-                datetime.now().isoformat(),
-                last_date,
-                round(last_price, 2),
-                [f.model_dump() if hasattr(f, "model_dump") else f for f in forecasts],
-            )
-        except Exception as db_err:
-            logger.warning(f"Failed to persist prediction: {db_err}")
-
-        market = get_market_status()
-
-        response = PredictionResponse(
-            success=True,
-            data_source=f"Yahoo Finance ({BRENT_TICKER})",
-            last_price_date=last_date,
-            last_price=round(last_price, 2),
-            forecasts=forecasts,
-            is_market_open=market["is_open"],
-            market_state=market["market_state"],
-            market_status_message=market["message"],
-        )
-
-        if _cache_enabled():
-            with _predict_cache_lock:
-                _predict_cache = (monotonic(), response)
-
-        return response
+        return await _refresh_prediction_cache(force_refresh=False, persist_forecast=True)
 
     except ValueError as e:
         logger.error(f"Validation error: {e}")
@@ -735,7 +794,7 @@ async def prediction_fan_chart(
 @app.get("/model-info")
 async def model_info():
     """Get information about the loaded models and system status."""
-    sent_info = sentiment_service.get_latest_info()
+    sent_info = await run_in_threadpool(sentiment_service.get_latest_info)
 
     return {
         "lookback": model_artifacts.lookback,
@@ -771,7 +830,7 @@ async def health_check():
 @app.get("/scraper/status")
 async def scraper_status():
     """Get the news scraper scheduler status and last run info."""
-    return get_scheduler_status()
+    return await run_in_threadpool(get_scheduler_status)
 
 
 @app.post(
@@ -818,7 +877,7 @@ async def scraper_run(
             )
     
     try:
-        result = run_scraper_now(target_date=validated_date)
+        result = await run_in_threadpool(partial(run_scraper_now, target_date=validated_date))
         return result
     except Exception as e:
         logger.error("Manual scraper run failed", exc_info=True)
@@ -857,8 +916,12 @@ async def scraper_backfill(
     capped_max_pages = min(max_pages, 50)
 
     try:
-        result = backfill_history(
-            days_back=capped_days_back, max_pages_per_site=capped_max_pages
+        result = await run_in_threadpool(
+            partial(
+                backfill_history,
+                days_back=capped_days_back,
+                max_pages_per_site=capped_max_pages,
+            )
         )
         return result
     except Exception as e:

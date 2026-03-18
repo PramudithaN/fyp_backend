@@ -73,6 +73,15 @@ SENTIMENT_MODE = os.getenv("SENTIMENT_MODE", "finbert")
 # Skip FinBERT preloading (useful for deployments without HuggingFace access)
 SKIP_FINBERT_PRELOAD = os.getenv("SKIP_FINBERT_PRELOAD", "false").lower() == "true"
 
+# Prediction API performance controls
+PREDICT_CACHE_TTL_SECONDS = float(os.getenv("PREDICT_CACHE_TTL_SECONDS", "45"))
+PREDICTION_PRECOMPUTE_ENABLED = (
+    os.getenv("PREDICTION_PRECOMPUTE_ENABLED", "true").lower() == "true"
+)
+PREDICTION_PRECOMPUTE_INTERVAL_SECONDS = int(
+    os.getenv("PREDICTION_PRECOMPUTE_INTERVAL_SECONDS", "900")
+)
+
 # Web scraper configuration
 SCRAPER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
