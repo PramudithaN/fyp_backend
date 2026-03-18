@@ -119,8 +119,9 @@ class TestPredictionResponse:
             last_price=75.50,
             forecasts=forecasts,
             is_market_open=True,
-            market_state="REGULAR",
-            market_status_message="Market is open",
+            market_open_time="02:00 UTC",
+            market_close_time="22:00 UTC",
+            timezone_info="UTC (Brent Oil - ICE)",
         )
 
         assert response.success is True
@@ -139,6 +140,10 @@ class TestHealthResponse:
             models_loaded=True,
             timestamp=datetime.now().isoformat(),
             version="1.0",
+            is_market_open=True,
+            market_open_time="02:00 UTC",
+            market_close_time="22:00 UTC",
+            timezone_info="UTC (Brent Oil - ICE)",
         )
 
         assert response.status == "healthy"

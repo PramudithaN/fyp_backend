@@ -5,7 +5,7 @@ Price fetcher service - fetches Brent oil prices from Yahoo Finance.
 import yfinance as yf
 import pandas as pd
 import os
-from datetime import datetime, timedelta, UTC
+from datetime import datetime, timedelta, UTC, time
 from typing import Optional, Dict, Any
 import logging
 from threading import RLock
@@ -181,7 +181,7 @@ def get_last_n_trading_days(prices: pd.DataFrame, n: int = 30) -> pd.DataFrame:
     return prices.tail(n).reset_index(drop=True)
 
 
-def get_market_status() -> dict:
+def get_market_status(now_utc: Optional[datetime] = None) -> dict:
     """
     Determine market status using trading-day logic with market hours.
 
@@ -204,16 +204,31 @@ def get_market_status() -> dict:
             - market_close_time (str): Market close time (22:00 UTC).
             - timezone_info (str): Timezone reference for market hours.
     """
-    from datetime import date
+    if now_utc is None:
+        now_utc = datetime.now(UTC)
+    elif now_utc.tzinfo is None:
+        now_utc = now_utc.replace(tzinfo=UTC)
 
-    today = date.today()
-    is_trading_day = today.weekday() < 5
+    is_trading_day = now_utc.weekday() < 5
+    market_open_utc = time(2, 0)
+    market_close_utc = time(22, 0)
+    is_within_market_hours = market_open_utc <= now_utc.time() < market_close_utc
 
-    if is_trading_day:
+    if is_trading_day and is_within_market_hours:
         return {
             "is_open": True,
             "market_state": "TRADING_DAY",
-            "message": "Market open (trading day)",
+            "message": "Market open (trading hours)",
+            "market_open_time": "02:00 UTC",
+            "market_close_time": "22:00 UTC",
+            "timezone_info": "UTC (Brent Oil - ICE)",
+        }
+
+    if is_trading_day:
+        return {
+            "is_open": False,
+            "market_state": "TRADING_DAY",
+            "message": "Market closed (outside trading hours)",
             "market_open_time": "02:00 UTC",
             "market_close_time": "22:00 UTC",
             "timezone_info": "UTC (Brent Oil - ICE)",

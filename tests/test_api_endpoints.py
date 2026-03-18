@@ -24,8 +24,8 @@ class TestHealthEndpoint:
         assert "version" in data
         # Market status fields
         assert "is_market_open" in data
-        assert "market_state" in data
-        assert "market_status_message" in data
+        assert "market_state" not in data
+        assert "market_status_message" not in data
         assert "market_open_time" in data
         assert "market_close_time" in data
         assert "timezone_info" in data

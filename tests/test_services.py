@@ -158,6 +158,27 @@ class TestPredictionService:
 class TestPriceFetcher:
     """Tests for price fetching service."""
 
+    def test_get_market_status_open_during_trading_hours(self):
+        """Market should be open on trading days during 02:00-22:00 UTC."""
+        from app.services.price_fetcher import get_market_status
+
+        market = get_market_status(datetime(2026, 3, 16, 12, 0, 0))  # Monday
+        assert market["is_open"] is True
+
+    def test_get_market_status_closed_outside_trading_hours(self):
+        """Market should be closed on trading days outside 02:00-22:00 UTC."""
+        from app.services.price_fetcher import get_market_status
+
+        market = get_market_status(datetime(2026, 3, 16, 1, 0, 0))  # Monday
+        assert market["is_open"] is False
+
+    def test_get_market_status_closed_non_trading_day(self):
+        """Market should be closed on non-trading days."""
+        from app.services.price_fetcher import get_market_status
+
+        market = get_market_status(datetime(2026, 3, 15, 12, 0, 0))  # Sunday
+        assert market["is_open"] is False
+
     @patch("yfinance.Ticker")
     def test_fetch_latest_prices(self, mock_ticker):
         """Test fetching latest prices from Yahoo Finance."""
