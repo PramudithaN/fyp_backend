@@ -207,7 +207,11 @@ def get_market_status(now_utc: Optional[datetime] = None) -> dict:
     if now_utc is None:
         now_utc = datetime.now(UTC)
     elif now_utc.tzinfo is None:
+        # Naive datetimes are treated as UTC.
         now_utc = now_utc.replace(tzinfo=UTC)
+    else:
+        # Always normalize aware datetimes to UTC before comparing to UTC hours.
+        now_utc = now_utc.astimezone(UTC)
 
     is_trading_day = now_utc.weekday() < 5
     market_open_utc = time(2, 0)

@@ -5,7 +5,7 @@ Tests for service layer components.
 import pytest
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock, Mock
 
 
@@ -178,6 +178,15 @@ class TestPriceFetcher:
 
         market = get_market_status(datetime(2026, 3, 15, 12, 0, 0))  # Sunday
         assert market["is_open"] is False
+
+    def test_get_market_status_converts_aware_datetime_to_utc(self):
+        """Timezone-aware datetimes should be normalized to UTC before evaluation."""
+        from app.services.price_fetcher import get_market_status
+
+        # 2026-03-16 23:00 at UTC+05:30 is 17:30 UTC (Monday), inside trading hours.
+        aware_local = datetime(2026, 3, 16, 23, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        market = get_market_status(aware_local)
+        assert market["is_open"] is True
 
     @patch("yfinance.Ticker")
     def test_fetch_latest_prices(self, mock_ticker):
