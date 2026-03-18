@@ -453,7 +453,7 @@ async def get_prices():
 )
 async def get_news(
     article_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
-    days: Annotated[int, Query(ge=1, le=30)] = 7,
+    days: Annotated[int, Query(ge=1)] = 7,
 ):
     """
     Return stored news articles for the frontend.
