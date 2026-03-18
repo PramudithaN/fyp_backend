@@ -1,6 +1,7 @@
 fastapi>=0.104.0
 libsql-experimental>=0.0.55
 uvicorn>=0.24.0
+prometheus-fastapi-instrumentator>=6.1.0
 torch>=2.0.0
 xgboost>=2.0.0
 scikit-learn>=1.3.0

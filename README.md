@@ -49,6 +49,10 @@ Configure the application using environment variables (create a `.env` file):
 | `SCRAPER_ENABLED` | `true` | Enable/disable the daily news scraper |
 | `SCRAPER_SCHEDULE_HOUR` | `6` | Hour (0-23) to run daily news scraper |
 | `SCRAPER_SCHEDULE_MINUTE` | `0` | Minute (0-59) to run daily news scraper |
+| `HF_SPACE_TARGET` | - | Hugging Face Space host used by local Prometheus scraper (e.g., `your-space.hf.space`) |
+| `GRAFANA_REMOTE_WRITE_URL` | - | Grafana Cloud Prometheus remote-write endpoint |
+| `GRAFANA_METRICS_USER_ID` | - | Grafana Cloud metrics username |
+| `GRAFANA_API_TOKEN` | - | Grafana Cloud API token with Metrics Publisher permissions |
 
 **Example `.env` file:**
 ```env

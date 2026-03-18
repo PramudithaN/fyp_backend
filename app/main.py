@@ -24,6 +24,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.config import (
     API_TITLE,
@@ -253,6 +254,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Expose Prometheus /metrics endpoint
+Instrumentator().instrument(app).expose(app, include_in_schema=False, tags=["observability"])
 
 
 @app.get("/", include_in_schema=False)

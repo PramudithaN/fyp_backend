@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "fastapi"
+    scheme: https
+    static_configs:
+      - targets: ["${HF_SPACE_TARGET}"]
+    metrics_path: "/metrics"
+
+# Remote-write to Grafana Cloud
+remote_write:
+  - url: "${GRAFANA_REMOTE_WRITE_URL}"
+    basic_auth:
+      username: "${GRAFANA_METRICS_USER_ID}"
+      password: "${GRAFANA_API_TOKEN}"
