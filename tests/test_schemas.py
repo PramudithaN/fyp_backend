@@ -118,6 +118,9 @@ class TestPredictionResponse:
             last_price_date="2026-03-01",
             last_price=75.50,
             forecasts=forecasts,
+            is_market_open=True,
+            market_state="REGULAR",
+            market_status_message="Market is open",
         )
 
         assert response.success is True

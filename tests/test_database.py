@@ -11,21 +11,25 @@ import sqlite3
 class TestDatabaseInitialization:
     """Tests for database initialization."""
 
-    @patch("sqlite3.connect")
-    def test_init_database(self, mock_connect):
+    @patch("app.database.get_connection")
+    def test_init_database(self, mock_get_conn):
         """Test database initialization."""
         from app.database import init_database
 
-        # Mock connection
+        # Mock connection using the actual get_connection path (Turso/libsql)
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
+        mock_cursor.description = None
+        mock_cursor.rowcount = 0
+        mock_cursor.lastrowid = None
         mock_conn.cursor.return_value = mock_cursor
-        mock_connect.return_value = mock_conn
+        mock_get_conn.return_value = mock_conn
 
         init_database()
 
-        # Verify connection was made
-        assert mock_connect.called
+        # Verify connection was made via get_connection
+        assert mock_get_conn.called
+        assert mock_cursor.execute.called
 
 
 class TestSentimentOperations:
@@ -54,33 +58,28 @@ class TestSentimentOperations:
         # Verify execute was called
         assert mock_cursor.execute.called
 
-    @patch("pandas.read_sql_query")
     @patch("app.database.get_connection")
-    def test_get_sentiment_history(self, mock_get_conn, mock_read_sql):
+    def test_get_sentiment_history(self, mock_get_conn):
         """Test retrieving sentiment history."""
         from app.database import get_sentiment_history
-        import pandas as pd
 
-        # Mock connection
+        # Mock connection — app uses _query_to_df which calls cursor.execute/fetchall
         mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.description = [
+            ("date",), ("daily_sentiment",), ("news_volume",),
+            ("log_news_volume",), ("decayed_news_volume",), ("high_news_regime",),
+        ]
+        mock_cursor.fetchall.return_value = [
+            ("2026-03-01", 0.5, 10, 2.3, 8.5, 1),
+            ("2026-03-02", 0.3, 8, 2.1, 7.0, 0),
+        ]
+        mock_conn.cursor.return_value = mock_cursor
         mock_get_conn.return_value = mock_conn
-
-        # Mock dataframe return
-        mock_df = pd.DataFrame(
-            {
-                "date": ["2026-03-01", "2026-03-02"],
-                "daily_sentiment": [0.5, 0.3],
-                "news_volume": [10, 8],
-                "log_news_volume": [2.3, 2.1],
-                "decayed_news_volume": [8.5, 7.0],
-                "high_news_regime": [1, 0],
-            }
-        )
-        mock_read_sql.return_value = mock_df
 
         result = get_sentiment_history(days=30)
 
-        assert mock_read_sql.called
+        assert mock_get_conn.called
         assert len(result) == 2
 
     @patch("app.database.get_connection")
@@ -170,33 +169,27 @@ class TestSentimentOperations:
         # Verify execute was called (not executemany in current implementation)
         assert mock_cursor.execute.called
 
-    @patch("pandas.read_sql_query")
     @patch("app.database.get_connection")
-    def test_get_sentiment_for_dates(self, mock_get_conn, mock_read_sql):
+    def test_get_sentiment_for_dates(self, mock_get_conn):
         """Test getting sentiment for specific dates."""
         from app.database import get_sentiment_for_dates
-        import pandas as pd
 
-        # Mock connection
+        # Mock connection — app uses _query_to_df which calls cursor.execute/fetchall
         mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.description = [
+            ("date",), ("daily_sentiment",), ("news_volume",),
+            ("log_news_volume",), ("decayed_news_volume",), ("high_news_regime",),
+        ]
+        mock_cursor.fetchall.return_value = [
+            ("2026-03-01", 0.5, 10, 2.3, 8.5, 1),
+        ]
+        mock_conn.cursor.return_value = mock_cursor
         mock_get_conn.return_value = mock_conn
-
-        # Mock dataframe return
-        mock_df = pd.DataFrame(
-            {
-                "date": ["2026-03-01"],
-                "daily_sentiment": [0.5],
-                "news_volume": [10],
-                "log_news_volume": [2.3],
-                "decayed_news_volume": [8.5],
-                "high_news_regime": [1],
-            }
-        )
-        mock_read_sql.return_value = mock_df
 
         result = get_sentiment_for_dates("2026-03-01", "2026-03-01")
 
-        assert mock_read_sql.called
+        assert mock_get_conn.called
         assert len(result) == 1
 
 

@@ -603,6 +603,47 @@ def get_prices(days: int = 90) -> pd.DataFrame:
     return df
 
 
+def get_prices_for_date_range(start_date: str, end_date: str) -> pd.DataFrame:
+    """
+    Return price rows within [start_date, end_date] from existing DB tables.
+
+    Preference order when both tables contain the same date:
+    1) prices
+    2) historical_prices
+    """
+    conn = get_connection()
+
+    query = """
+        SELECT date, price, source, 1 AS priority
+        FROM prices
+        WHERE date >= ? AND date <= ?
+        UNION ALL
+        SELECT date, price, source, 2 AS priority
+        FROM historical_prices
+        WHERE date >= ? AND date <= ?
+    """
+
+    df = _query_to_df(
+        conn,
+        query,
+        params=(start_date, end_date, start_date, end_date),
+    )
+    conn.close()
+
+    if df.empty:
+        return pd.DataFrame(columns=["date", "price", "source"])
+
+    df["date"] = pd.to_datetime(df["date"])
+    df = (
+        df.sort_values(["date", "priority"])
+        .drop_duplicates(subset=["date"], keep="first")
+        .drop(columns=["priority"])
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+    return df
+
+
 def _to_float(value: Any) -> Optional[float]:
     """Convert mixed numeric text formats (%, K/M/B suffixes, commas) to float."""
     if value is None:

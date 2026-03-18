@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 import pandas as pd
 import numpy as np
+from io import BytesIO
 from datetime import datetime, timedelta
 
 
@@ -201,6 +202,152 @@ class TestPredictEndpoint:
 
         response = test_client.get("/predict")
         assert response.status_code == 500
+
+
+class TestUploadPredictionEndpoints:
+    """Tests for upload-based prediction endpoints."""
+
+    @staticmethod
+    def _excel_bytes_from_df(df: pd.DataFrame) -> bytes:
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False)
+        return buffer.getvalue()
+
+    def test_upload_template_download(self, test_client):
+        """Template endpoint should return downloadable xlsx content."""
+        response = test_client.get("/predict/upload-excel/template")
+        assert response.status_code == 200
+        assert (
+            response.headers["content-type"]
+            == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        assert "attachment; filename=oil_price_upload_template.xlsx" in response.headers.get(
+            "content-disposition", ""
+        )
+        assert response.content[:2] == b"PK"
+
+    @patch("app.main.run_prediction_from_uploaded_excel")
+    def test_upload_predict_success(self, mock_upload_predict, test_client):
+        """Upload endpoint should return model payload for valid excel uploads."""
+        mock_upload_predict.return_value = {
+            "data_source": "Uploaded Excel + Database Backfill + Sentiment History",
+            "last_price_date": "2026-03-18",
+            "last_price": 84.12,
+            "forecasts": [
+                {
+                    "date": "2026-03-19",
+                    "forecasted_price": 84.8,
+                    "forecasted_return": 0.01,
+                    "horizon": 1,
+                }
+            ],
+            "upload_window": {
+                "lookback_days": 30,
+                "window_start": "2026-02-17",
+                "window_end": "2026-03-18",
+                "uploaded_rows_used": 27,
+                "filled_from_database": 3,
+                "filled_by_carry": 0,
+            },
+            "resolved_price_window": [
+                {"date": "2026-03-18", "price": 84.12, "source": "uploaded"}
+            ],
+        }
+
+        valid_df = pd.DataFrame(
+            {
+                "date": pd.date_range(end=datetime.now(), periods=30, freq="D"),
+                "price": np.linspace(80, 85, 30),
+            }
+        )
+        payload = self._excel_bytes_from_df(valid_df)
+
+        response = test_client.post(
+            "/predict/upload-excel",
+            files={
+                "file": (
+                    "prices.xlsx",
+                    payload,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["success"] is True
+        assert body["last_price"] == pytest.approx(84.12)
+        assert len(body["forecasts"]) == 1
+
+    def test_upload_predict_missing_columns(self, test_client):
+        """Upload should fail when required date/price columns are missing."""
+        invalid_df = pd.DataFrame(
+            {
+                "day_number": [1, 2, 3],
+                "close_value": [80.0, 81.0, 82.0],
+            }
+        )
+        payload = self._excel_bytes_from_df(invalid_df)
+
+        response = test_client.post(
+            "/predict/upload-excel",
+            files={
+                "file": (
+                    "bad_columns.xlsx",
+                    payload,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+
+        assert response.status_code == 400
+        assert "Excel must include date and price columns" in response.json()["detail"]
+
+    @patch("app.main.run_prediction_from_uploaded_excel")
+    def test_upload_predict_insufficient_data(self, mock_upload_predict, test_client):
+        """Upload should return 400 when lookback window cannot be built."""
+        mock_upload_predict.side_effect = ValueError(
+            "Insufficient data to build full lookback window"
+        )
+
+        valid_df = pd.DataFrame(
+            {
+                "date": pd.date_range(end=datetime.now(), periods=3, freq="D"),
+                "price": [80.0, 81.0, 82.0],
+            }
+        )
+        payload = self._excel_bytes_from_df(valid_df)
+
+        response = test_client.post(
+            "/predict/upload-excel",
+            files={
+                "file": (
+                    "small.xlsx",
+                    payload,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+
+        assert response.status_code == 400
+        assert "Insufficient data" in response.json()["detail"]
+
+    def test_upload_predict_empty_file(self, test_client):
+        """Upload should reject empty files."""
+        response = test_client.post(
+            "/predict/upload-excel",
+            files={
+                "file": (
+                    "empty.xlsx",
+                    b"",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Uploaded file is empty"
 
 
 class TestModelInfoEndpoint:

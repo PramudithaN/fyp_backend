@@ -56,6 +56,37 @@ class PredictionResponse(BaseModel):
     market_status_message: str = Field(..., description="Human-readable market status")
 
 
+class UploadWindowStats(BaseModel):
+    """Stats describing how the uploaded lookback window was resolved."""
+
+    lookback_days: int = Field(..., ge=1)
+    window_start: str = Field(..., description=DATE_FMT_DESC)
+    window_end: str = Field(..., description=DATE_FMT_DESC)
+    uploaded_rows_used: int = Field(..., ge=0)
+    filled_from_database: int = Field(..., ge=0)
+    filled_by_carry: int = Field(..., ge=0)
+
+
+class ResolvedPricePoint(BaseModel):
+    """Single row in resolved lookback prices after fallback filling."""
+
+    date: str = Field(..., description=DATE_FMT_DESC)
+    price: float = Field(..., gt=0)
+    source: str = Field(..., description="uploaded | database | carry_fill")
+
+
+class UploadPredictionResponse(BaseModel):
+    """Response for Excel upload prediction endpoint."""
+
+    success: bool = Field(..., description="Whether prediction succeeded")
+    data_source: str = Field(..., description="Composed data source description")
+    last_price_date: str = Field(..., description="Date of last known price")
+    last_price: float = Field(..., description="Last known price (USD)")
+    forecasts: List[ForecastDay] = Field(..., description="14-day price forecasts")
+    upload_window: UploadWindowStats
+    resolved_price_window: List[ResolvedPricePoint]
+
+
 class PriceDataResponse(BaseModel):
     """Response for price data endpoint."""
 

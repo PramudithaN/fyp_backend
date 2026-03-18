@@ -22,7 +22,7 @@ from time import monotonic
 from typing import Annotated
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query, Header
+from fastapi import FastAPI, HTTPException, Query, Header, UploadFile, File, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -54,6 +54,10 @@ from app.services.price_fetcher import (
     get_market_status,
 )
 from app.services.prediction import prediction_service
+from app.services.upload_prediction import (
+    run_prediction_from_uploaded_excel,
+    build_upload_excel_template_bytes,
+)
 from app.services.sentiment_service import sentiment_service
 from app.services.scraper_scheduler import (
     get_scheduler_status,
@@ -63,6 +67,7 @@ from app.services.scraper_scheduler import (
 from app.schemas.prediction import (
     PredictionRequest,
     PredictionResponse,
+    UploadPredictionResponse,
     PredictionComparisonResponse,
     PriceDataResponse,
     HealthResponse,
@@ -669,6 +674,89 @@ async def predict_now():
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Prediction error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/predict/upload-excel/template",
+    responses={
+        200: {
+            "description": "Excel template file",
+            "content": {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {}
+            },
+        }
+    },
+)
+async def get_upload_excel_template():
+    """Download strict Excel template for upload-based prediction."""
+    template_bytes = await run_in_threadpool(
+        build_upload_excel_template_bytes,
+        model_artifacts.lookback,
+    )
+
+    return Response(
+        content=template_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": "attachment; filename=oil_price_upload_template.xlsx"
+        },
+    )
+
+
+@app.post(
+    "/predict/upload-excel",
+    response_model=UploadPredictionResponse,
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": "Invalid or insufficient uploaded data",
+        },
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error during uploaded prediction",
+        },
+    },
+)
+async def predict_from_uploaded_excel(
+    file: UploadFile = File(..., description="Excel file containing date/price rows"),
+):
+    """
+    Run prediction using an uploaded Excel lookback window without storing upload rows.
+
+    Workflow:
+    1. Parse uploaded date/price data.
+    2. Build the required lookback window (30 days by model config).
+    3. Fill missing dates using existing database price tables (read-only).
+    4. Align sentiment using existing sentiment table (read-only).
+    5. Run model prediction and return response payload to frontend.
+    """
+    try:
+        file_bytes = await file.read()
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+        payload = await run_in_threadpool(
+            run_prediction_from_uploaded_excel,
+            file_bytes,
+            file.filename,
+        )
+
+        return UploadPredictionResponse(
+            success=True,
+            data_source=payload["data_source"],
+            last_price_date=payload["last_price_date"],
+            last_price=payload["last_price"],
+            forecasts=payload["forecasts"],
+            upload_window=payload["upload_window"],
+            resolved_price_window=payload["resolved_price_window"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Upload Excel prediction error", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
