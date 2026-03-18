@@ -594,17 +594,36 @@ def add_bulk_prices(price_records: List[Dict[str, Any]]) -> int:
     Each record must have 'date' and 'price' keys.
     Optional 'source' key (defaults to 'yahoo_finance').
     """
+    if not price_records:
+        return 0
+
     conn = get_connection()
     cursor = conn.cursor()
-    count = 0
+
+    # Batch values into chunked multi-row INSERT statements to reduce remote DB round-trips.
+    chunk_size = 200
+    rows = [
+        (
+            rec["date"],
+            float(rec["price"]),
+            rec.get("source", "yahoo_finance"),
+        )
+        for rec in price_records
+    ]
+
     try:
-        for rec in price_records:
-            cursor.execute(
-                "INSERT OR REPLACE INTO prices (date, price, source) VALUES (?, ?, ?)",
-                (rec["date"], rec["price"], rec.get("source", "yahoo_finance")),
+        for i in range(0, len(rows), chunk_size):
+            chunk = rows[i : i + chunk_size]
+            placeholders = ", ".join(["(?, ?, ?)"] * len(chunk))
+            query = (
+                "INSERT OR REPLACE INTO prices (date, price, source) VALUES "
+                f"{placeholders}"
             )
-            count += 1
+            params = [value for row in chunk for value in row]
+            cursor.execute(query, params)
+
         conn.commit()
+        count = len(rows)
         logger.info(f"Saved {count} price records")
         return count
     except Exception as e:

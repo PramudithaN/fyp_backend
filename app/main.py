@@ -98,9 +98,33 @@ _PRICE_SYNC_CACHE_TTL_SECONDS = 300.0
 _price_sync_cache_lock = RLock()
 _price_sync_cache: dict[int, tuple[float, pd.DataFrame]] = {}
 _PREDICT_CACHE_TTL_SECONDS = PREDICT_CACHE_TTL_SECONDS
+_PREDICT_CACHE_MAX_STALE_SECONDS = max(
+    float(os.getenv("PREDICT_CACHE_MAX_STALE_SECONDS", "600")),
+    _PREDICT_CACHE_TTL_SECONDS,
+)
 _predict_cache_lock = RLock()
 _predict_cache: tuple[float, PredictionResponse] | None = None
 _prediction_refresh_lock = asyncio.Lock()
+_prediction_background_refresh_task: asyncio.Task | None = None
+
+
+def _ensure_prediction_background_refresh(persist_forecast: bool) -> None:
+    """Kick off one cache refresh task if no refresh is currently running."""
+    global _prediction_background_refresh_task
+
+    if _prediction_background_refresh_task and not _prediction_background_refresh_task.done():
+        return
+
+    async def _refresh_task_runner():
+        global _prediction_background_refresh_task
+        try:
+            await _refresh_prediction_cache(force_refresh=True, persist_forecast=persist_forecast)
+        except Exception as exc:
+            logger.warning("Background prediction cache refresh failed: %s", exc, exc_info=True)
+        finally:
+            _prediction_background_refresh_task = None
+
+    _prediction_background_refresh_task = asyncio.create_task(_refresh_task_runner())
 
 
 async def _build_prediction_response(persist_forecast: bool = True) -> PredictionResponse:
@@ -170,14 +194,24 @@ async def _refresh_prediction_cache(
 
     if _cache_enabled() and not force_refresh:
         with _predict_cache_lock:
-            if _predict_cache and (monotonic() - _predict_cache[0]) < _PREDICT_CACHE_TTL_SECONDS:
-                return _predict_cache[1]
+            if _predict_cache:
+                cache_age_seconds = monotonic() - _predict_cache[0]
+                if cache_age_seconds < _PREDICT_CACHE_TTL_SECONDS:
+                    return _predict_cache[1]
+                if cache_age_seconds < _PREDICT_CACHE_MAX_STALE_SECONDS:
+                    _ensure_prediction_background_refresh(persist_forecast=persist_forecast)
+                    return _predict_cache[1]
 
     async with _prediction_refresh_lock:
         if _cache_enabled() and not force_refresh:
             with _predict_cache_lock:
-                if _predict_cache and (monotonic() - _predict_cache[0]) < _PREDICT_CACHE_TTL_SECONDS:
-                    return _predict_cache[1]
+                if _predict_cache:
+                    cache_age_seconds = monotonic() - _predict_cache[0]
+                    if cache_age_seconds < _PREDICT_CACHE_TTL_SECONDS:
+                        return _predict_cache[1]
+                    if cache_age_seconds < _PREDICT_CACHE_MAX_STALE_SECONDS:
+                        _ensure_prediction_background_refresh(persist_forecast=persist_forecast)
+                        return _predict_cache[1]
 
         response = await _build_prediction_response(persist_forecast=persist_forecast)
 
