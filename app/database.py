@@ -310,9 +310,36 @@ def init_database() -> None:
         )
     """)
 
+    # Create explanations table (stores daily explainability results)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS explanations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            explanation_date TEXT UNIQUE NOT NULL,
+            prediction REAL NOT NULL,
+            confidence_interval_lower REAL NOT NULL,
+            confidence_interval_upper REAL NOT NULL,
+            arima_contribution REAL NOT NULL,
+            gru_mid_contribution REAL NOT NULL,
+            gru_sent_contribution REAL NOT NULL,
+            xgb_hf_contribution REAL NOT NULL,
+            agreement_score REAL NOT NULL,
+            confidence_level TEXT NOT NULL,
+            top_shap_features TEXT NOT NULL,
+            sentiment_headlines TEXT NOT NULL,
+            explanation_text TEXT NOT NULL,
+            model_weights TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            computation_time_seconds REAL NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_explanations_date ON explanations(explanation_date)
+    """)
+
     conn.commit()
     conn.close()
-    logger.info("Database initialized successfully (sentiment, prices, articles, predictions)")
+    logger.info("Database initialized successfully (sentiment, prices, articles, predictions, explanations)")
 
 
 def add_sentiment(
@@ -1638,3 +1665,134 @@ def get_actual_vs_predicted_until(
         "rows": rows,
         "metrics": _compute_comparison_metrics(rows),
     }
+
+
+# ---------------------------------------------------------------------------
+# Explainability functions
+# ---------------------------------------------------------------------------
+
+
+def add_explanation(
+    explanation_date: str,
+    prediction: float,
+    confidence_interval_lower: float,
+    confidence_interval_upper: float,
+    arima_contribution: float,
+    gru_mid_contribution: float,
+    gru_sent_contribution: float,
+    xgb_hf_contribution: float,
+    agreement_score: float,
+    confidence_level: str,
+    top_shap_features: List[Dict[str, Any]],
+    sentiment_headlines: List[Dict[str, Any]],
+    explanation_text: str,
+    model_weights: Dict[str, float],
+    generated_at: str,
+    computation_time_seconds: float,
+) -> int:
+    """
+    Store a daily explainability result.
+
+    Args:
+        explanation_date: Date string (YYYY-MM-DD) when the explanation was generated.
+        prediction: The predicted price.
+        confidence_interval_lower/upper: Confidence bounds.
+        arima_contribution, gru_mid_contribution, gru_sent_contribution, xgb_hf_contribution:
+            Model-specific contributions to the final price.
+        agreement_score: Standard deviation of model predictions / mean (0.0 = low, 1.0+ = high disagreement).
+        confidence_level: "high" if agreement_score < 0.05, else "moderate".
+        top_shap_features: List of top 7 SHAP feature dicts.
+        sentiment_headlines: List of top 3 sentiment headline dicts.
+        explanation_text: Plain English narrative (3-sentence explanation).
+        model_weights: Dict of model names to ensemble weights.
+        generated_at: ISO timestamp when computation occurred.
+        computation_time_seconds: How long the computation took.
+
+    Returns:
+        Row id of the inserted record.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO explanations (
+                explanation_date, prediction, confidence_interval_lower,
+                confidence_interval_upper, arima_contribution, gru_mid_contribution,
+                gru_sent_contribution, xgb_hf_contribution, agreement_score,
+                confidence_level, top_shap_features, sentiment_headlines,
+                explanation_text, model_weights, generated_at, computation_time_seconds
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                explanation_date,
+                prediction,
+                confidence_interval_lower,
+                confidence_interval_upper,
+                arima_contribution,
+                gru_mid_contribution,
+                gru_sent_contribution,
+                xgb_hf_contribution,
+                agreement_score,
+                confidence_level,
+                json.dumps(top_shap_features),
+                json.dumps(sentiment_headlines),
+                explanation_text,
+                json.dumps(model_weights),
+                generated_at,
+                computation_time_seconds,
+            ),
+        )
+        row_id = cursor.lastrowid
+        conn.commit()
+        logger.info(f"Saved explanation for date={explanation_date} id={row_id}")
+        return row_id
+    except Exception as e:
+        logger.error(f"Error saving explanation: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_explanation_for_date(explanation_date: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve a stored explanation by date.
+
+    Args:
+        explanation_date: Date string (YYYY-MM-DD).
+
+    Returns:
+        Explanation dict with parsed JSON fields, or None if not found.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT * FROM explanations WHERE explanation_date = ? LIMIT 1",
+            (explanation_date,),
+        )
+        result = _fetchone_dict(cursor)
+        if result:
+            # Parse JSON fields
+            result["top_shap_features"] = json.loads(result.get("top_shap_features", "[]"))
+            result["sentiment_headlines"] = json.loads(result.get("sentiment_headlines", "[]"))
+            result["model_weights"] = json.loads(result.get("model_weights", "{}"))
+        return result
+    finally:
+        conn.close()
+
+
+def explanation_exists_for_date(explanation_date: str) -> bool:
+    """Check if an explanation already exists for a given date."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT 1 FROM explanations WHERE explanation_date = ? LIMIT 1",
+            (explanation_date,),
+        )
+        result = cursor.fetchone()
+        return result is not None
+    finally:
+        conn.close()

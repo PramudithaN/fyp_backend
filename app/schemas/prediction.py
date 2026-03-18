@@ -291,3 +291,50 @@ class HistoricalCombinedFeaturesResponse(BaseModel):
     offset: int
     date_range: dict
     data: List[dict]
+
+
+class SHAPFeature(BaseModel):
+    """Single feature in SHAP explanation."""
+
+    feature_name: str = Field(..., description="Name of the feature")
+    shap_value: float = Field(..., description="SHAP value contribution")
+    feature_value: float = Field(
+        ..., description="Actual value of the feature in the data"
+    )
+
+
+class SentimentHeadline(BaseModel):
+    """Sentiment headline in explanation."""
+
+    headline: str = Field(...)
+    sentiment_score: float = Field(..., ge=-1.0, le=1.0)
+    sentiment_label: str = Field(..., description="bullish|bearish|neutral")
+    top_keywords: List[str] = Field(...)
+
+
+class ExplanationResponse(BaseModel):
+    """Response for /explain endpoint."""
+
+    success: bool = Field(..., description="Whether explanation was retrieved")
+    explanation_date: str = Field(..., description=DATE_FMT_DESC)
+    prediction: float = Field(..., description="Predicted price (USD/barrel)")
+    confidence_interval_lower: float = Field(...)
+    confidence_interval_upper: float = Field(...)
+    confidence_level: str = Field(..., description="high|moderate")
+    agreement_score: float = Field(
+        ..., description="Model agreement (0=perfect, 1+=high disagreement)"
+    )
+    model_contributions: dict = Field(
+        ..., description="USD contribution from each model"
+    )
+    top_features: List[SHAPFeature] = Field(
+        ..., description="Top 7 global SHAP features"
+    )
+    sentiment_headlines: List[SentimentHeadline] = Field(
+        ..., description="Top 3 sentiment headlines"
+    )
+    explanation_text: str = Field(
+        ..., description="3-sentence plain English narrative"
+    )
+    generated_at: str = Field(..., description="ISO timestamp of generation")
+    computation_time_seconds: float = Field(..., description="How long computation took")

@@ -360,9 +360,27 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Prediction precompute disabled")
 
+    # Initialize explainability scheduler (must run in async context, not threadpool)
+    try:
+        from app.services.explainability_scheduler import init_scheduler
+
+        init_scheduler()
+        logger.info("Explainability scheduler initialized")
+    except Exception as e:
+        logger.warning(f"Explainability scheduler initialization failed: {e}", exc_info=True)
+
     logger.info("Application startup completed successfully")
 
     yield
+    
+    # Shutdown explainability scheduler
+    try:
+        from app.services.explainability_scheduler import shutdown_scheduler
+
+        await shutdown_scheduler()
+    except Exception as e:
+        logger.warning(f"Explainability scheduler shutdown failed: {e}")
+
     precompute_stop_event.set()
     if precompute_task is not None:
         try:
@@ -1014,6 +1032,116 @@ async def scraper_backfill(
         return result
     except Exception as e:
         logger.error("Backfill failed", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# EXPLAINABILITY ENDPOINTS
+# ============================================================================
+
+
+@app.get(
+    "/explain",
+    response_model=None,  # Manually serialize to avoid import ordering issues
+    responses={
+        200: {
+            "model": dict,
+            "description": "Explanation result"
+        },
+        400: {"model": ErrorResponse, "description": "Invalid date format"},
+        503: {
+            "model": ErrorResponse,
+            "description": "Explanation not yet computed for today (job hasn't run)",
+        },
+        500: {"model": ErrorResponse, "description": "Server error retrieving explanation"},
+    },
+)
+async def get_explanation(
+    explanation_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+):
+    """
+    Retrieve stored explainability result for a given date.
+
+    If no explanation_date is provided, defaults to today.
+    The explanation is pre-computed once per day at 06:00 UTC and cached in the database.
+    
+    If the job hasn't run yet for today, returns 503 with a retry message.
+
+    Args:
+        explanation_date: Optional YYYY-MM-DD date. Defaults to today.
+
+    Returns:
+        Explainability result with SHAP features, sentiment analysis, and LLM narrative.
+    """
+    from app.database import get_explanation_for_date
+
+    if explanation_date is None:
+        explanation_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Validate date format
+    try:
+        datetime.strptime(explanation_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid date format. Expected YYYY-MM-DD",
+        )
+
+    try:
+        # Retrieve from database (fast, <200ms guaranteed)
+        explanation = await run_in_threadpool(
+            get_explanation_for_date, explanation_date
+        )
+
+        if explanation is None:
+            # Explanation hasn't been computed yet
+            raise HTTPException(
+                status_code=503,
+                detail=f"Explanation not yet available for {explanation_date}. "
+                "The daily job runs at 06:00 UTC. Please retry in a few moments.",
+            )
+
+        # Format response as dict
+        return {
+            "success": True,
+            "explanation_date": explanation_date,
+            "prediction": explanation["prediction"],
+            "confidence_interval_lower": explanation["confidence_interval_lower"],
+            "confidence_interval_upper": explanation["confidence_interval_upper"],
+            "confidence_level": explanation["confidence_level"],
+            "agreement_score": explanation["agreement_score"],
+            "model_contributions": {
+                "arima": explanation["arima_contribution"],
+                "gru_mid": explanation["gru_mid_contribution"],
+                "gru_sent": explanation["gru_sent_contribution"],
+                "xgb_hf": explanation["xgb_hf_contribution"],
+            },
+            "top_features": [
+                {
+                    "feature_name": f["feature_name"],
+                    "shap_value": f["shap_value"],
+                    "feature_value": f.get("feature_value", 0.0),
+                }
+                for f in explanation["top_shap_features"]
+            ],
+            "sentiment_headlines": [
+                {
+                    "headline": h["headline"],
+                    "sentiment_score": h["sentiment_score"],
+                    "sentiment_label": h["sentiment_label"],
+                    "top_keywords": h.get("top_keywords", []),
+                }
+                for h in explanation["sentiment_headlines"]
+            ],
+            "explanation_text": explanation["explanation_text"],
+            "generated_at": explanation["generated_at"],
+            "computation_time_seconds": explanation["computation_time_seconds"],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving explanation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
