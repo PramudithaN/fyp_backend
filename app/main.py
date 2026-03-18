@@ -181,6 +181,9 @@ async def _build_prediction_response(persist_forecast: bool = True) -> Predictio
         is_market_open=market["is_open"],
         market_state=market["market_state"],
         market_status_message=market["message"],
+        market_open_time=market["market_open_time"],
+        market_close_time=market["market_close_time"],
+        timezone_info=market["timezone_info"],
     )
 
 
@@ -459,12 +462,19 @@ async def root():
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint with market status."""
+    market = await run_in_threadpool(get_market_status)
     return HealthResponse(
         status="healthy",
         models_loaded=model_artifacts._loaded,
         timestamp=datetime.now().isoformat(),
         version=API_VERSION,
+        is_market_open=market["is_open"],
+        market_state=market["market_state"],
+        market_status_message=market["message"],
+        market_open_time=market["market_open_time"],
+        market_close_time=market["market_close_time"],
+        timezone_info=market["timezone_info"],
     )
 
 

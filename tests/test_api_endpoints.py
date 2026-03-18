@@ -14,7 +14,7 @@ class TestHealthEndpoint:
     """Tests for health check endpoint."""
 
     def test_health_check(self, test_client):
-        """Test health check returns correct status."""
+        """Test health check returns correct status with market information."""
         response = test_client.get("/health")
         assert response.status_code == 200
         data = response.json()
@@ -22,6 +22,18 @@ class TestHealthEndpoint:
         assert data["status"] == "healthy"
         assert "timestamp" in data
         assert "version" in data
+        # Market status fields
+        assert "is_market_open" in data
+        assert "market_state" in data
+        assert "market_status_message" in data
+        assert "market_open_time" in data
+        assert "market_close_time" in data
+        assert "timezone_info" in data
+        # Verify market hours are correct for Brent Oil
+        assert data["market_open_time"] == "02:00 UTC"
+        assert data["market_close_time"] == "22:00 UTC"
+        assert "UTC" in data["timezone_info"]
+        assert "Brent" in data["timezone_info"]
 
 
 class TestRootEndpoint:

@@ -54,6 +54,9 @@ class PredictionResponse(BaseModel):
     is_market_open: bool = Field(..., description="Whether the oil market is currently open")
     market_state: str = Field(..., description="Raw market state from Yahoo Finance (REGULAR, CLOSED, PRE, POST, etc.)")
     market_status_message: str = Field(..., description="Human-readable market status")
+    market_open_time: str = Field(..., description="Market open time (02:00 UTC for Brent Oil)")
+    market_close_time: str = Field(..., description="Market close time (22:00 UTC for Brent Oil)")
+    timezone_info: str = Field(..., description="Timezone reference for market hours")
 
 
 class UploadWindowStats(BaseModel):
@@ -130,6 +133,12 @@ class HealthResponse(BaseModel):
     models_loaded: bool
     timestamp: str
     version: str
+    is_market_open: bool = Field(..., description="Whether the oil market is currently open")
+    market_state: str = Field(..., description="Market state (TRADING_DAY or NON_TRADING_DAY)")
+    market_status_message: str = Field(..., description="Human-readable market status")
+    market_open_time: str = Field(..., description="Market open time (02:00 UTC for Brent Oil)")
+    market_close_time: str = Field(..., description="Market close time (22:00 UTC for Brent Oil)")
+    timezone_info: str = Field(..., description="Timezone reference for market hours")
 
 
 class ErrorResponse(BaseModel):

@@ -183,10 +183,16 @@ def get_last_n_trading_days(prices: pd.DataFrame, n: int = 30) -> pd.DataFrame:
 
 def get_market_status() -> dict:
     """
-    Determine market status using trading-day logic only.
+    Determine market status using trading-day logic with market hours.
+
+    Brent Oil (ICE) Trading Hours:
+    - Main trading session: 02:00 UTC - 22:00 UTC (20 hours/day)
+    - Converted to common timezones:
+      * EST: 21:00 previous day - 17:00 same day
+      * GMT: 02:00 - 22:00 UTC
 
     Rule:
-    - Monday to Friday: market open
+    - Monday to Friday: market open from 02:00 to 22:00 UTC
     - Saturday/Sunday: market closed
 
     Returns:
@@ -194,6 +200,9 @@ def get_market_status() -> dict:
             - is_open (bool): True on trading days (Mon-Fri).
             - market_state (str): "TRADING_DAY" or "NON_TRADING_DAY".
             - message (str): Human-readable status string.
+            - market_open_time (str): Market open time (02:00 UTC).
+            - market_close_time (str): Market close time (22:00 UTC).
+            - timezone_info (str): Timezone reference for market hours.
     """
     from datetime import date
 
@@ -205,12 +214,18 @@ def get_market_status() -> dict:
             "is_open": True,
             "market_state": "TRADING_DAY",
             "message": "Market open (trading day)",
+            "market_open_time": "02:00 UTC",
+            "market_close_time": "22:00 UTC",
+            "timezone_info": "UTC (Brent Oil - ICE)",
         }
 
     return {
         "is_open": False,
         "market_state": "NON_TRADING_DAY",
         "message": "Market closed (non-trading day)",
+        "market_open_time": "02:00 UTC",
+        "market_close_time": "22:00 UTC",
+        "timezone_info": "UTC (Brent Oil - ICE)",
     }
 
 
