@@ -15,6 +15,7 @@ import math
 import re
 import numpy as np
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
@@ -36,11 +37,12 @@ NEWSAPI_KEY = CONFIG_NEWSAPI_KEY  # From config.py
 # Oil-related search terms (simplified for better results)
 OIL_SEARCH_QUERY = "oil price OR crude oil OR brent OR OPEC"
 PEXELS_SEARCH_URL = "https://api.pexels.com/v1/search"
-MAX_PEXELS_LOOKUPS_PER_RUN = 20
+MAX_PEXELS_LOOKUPS_PER_RUN = 200   # raised: 200 Pexels lookups per scrape run (free tier allows 200/hour)
 DEFAULT_IMAGE_QUERY = "energy infrastructure"
 DEFAULT_OIL_QUERY = "oil industry"
 DEFAULT_REFINERY_QUERY = "oil refinery"
 DEFAULT_CRUDE_QUERY = "crude oil"
+DEFAULT_ARTICLE_IMAGE_URL = "https://images.pexels.com/photos/257700/pexels-photo-257700.jpeg"
 
 HEADLINE_STOP_WORDS = {
     "the",
@@ -431,6 +433,7 @@ def _resolve_image_url_from_headline(
 def _fetch_pexels_image_url(query: str) -> str:
     """Fetch a relevant free-stock image URL from Pexels."""
     if not PEXELS_API_KEY:
+        logger.debug("PEXELS_API_KEY not set — skipping image lookup for query: %s", query)
         return ""
 
     import requests
@@ -838,25 +841,41 @@ def compute_sentiment_features_with_articles(
         (sentiment_mode == "finbert") if sentiment_mode else (SENTIMENT_MODE == "finbert")
     )
 
-    texts = _extract_texts_from_articles(articles)
+    def _compute_all_sentiments() -> List[float]:
+        texts = _extract_texts_from_articles(articles)
+        sentiments = None
+        if use_finbert:
+            sentiments = _analyze_with_finbert(texts)
+        if not sentiments:
+            sentiments = _analyze_with_simple_sentiment(articles)
+        return sentiments
 
-    all_sentiments = None
-    if use_finbert:
-        all_sentiments = _analyze_with_finbert(texts)
-    if not all_sentiments:
-        all_sentiments = _analyze_with_simple_sentiment(articles)
+    def _resolve_all_images() -> List[str]:
+        image_cache: Dict[str, str] = {}
+        lookup_counter: Dict[str, int] = {"count": 0}
+        urls: List[str] = []
+        for article in articles:
+            resolved = _resolve_image_url_from_headline(
+                title=article.get("title", ""),
+                cache=image_cache,
+                max_new_lookups=MAX_PEXELS_LOOKUPS_PER_RUN,
+                lookup_counter=lookup_counter,
+            )
+            # Always persist a non-empty image URL for frontend cards.
+            urls.append(resolved or DEFAULT_ARTICLE_IMAGE_URL)
+        return urls
 
-    image_cache: Dict[str, str] = {}
-    lookup_counter: Dict[str, int] = {"count": 0}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        sentiments_future = executor.submit(_compute_all_sentiments)
+        images_future = executor.submit(_resolve_all_images)
+
+        all_sentiments = sentiments_future.result()
+        image_urls = images_future.result()
 
     enriched = []
-    for article, score in zip(articles, all_sentiments):
-        image_url = _resolve_image_url_from_headline(
-            title=article.get("title", ""),
-            cache=image_cache,
-            max_new_lookups=MAX_PEXELS_LOOKUPS_PER_RUN,
-            lookup_counter=lookup_counter,
-        )
+    for idx, article in enumerate(articles):
+        score = all_sentiments[idx] if idx < len(all_sentiments) else 0.0
+        image_url = image_urls[idx] if idx < len(image_urls) else DEFAULT_ARTICLE_IMAGE_URL
 
         enriched.append(
             {

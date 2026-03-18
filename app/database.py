@@ -928,10 +928,10 @@ def add_news_articles(article_date: str, articles: List[Dict[str, Any]]) -> int:
 
     Each article dict should contain:
         title, description, url, image_url, source, published_at, sentiment_score
-    Duplicate URLs are silently ignored (INSERT OR IGNORE).
+    Duplicate URLs update image_url when an incoming non-empty image URL is available.
 
     Returns:
-        Number of new rows inserted.
+        Number of processed rows.
     """
     conn = get_connection()
     cursor = conn.cursor()
@@ -940,9 +940,16 @@ def add_news_articles(article_date: str, articles: List[Dict[str, Any]]) -> int:
         for art in articles:
             cursor.execute(
                 """
-                INSERT OR IGNORE INTO news_articles
+                INSERT INTO news_articles
                     (article_date, title, description, url, image_url, source, published_at, sentiment_score)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(url) DO UPDATE SET
+                    image_url = CASE
+                        WHEN excluded.image_url IS NOT NULL
+                             AND excluded.image_url != ''
+                        THEN excluded.image_url
+                        ELSE news_articles.image_url
+                    END
                 """,
                 (
                     article_date,
@@ -955,10 +962,9 @@ def add_news_articles(article_date: str, articles: List[Dict[str, Any]]) -> int:
                     art.get("sentiment_score"),
                 ),
             )
-            if cursor.rowcount:
-                count += 1
+            count += 1
         conn.commit()
-        logger.info(f"Saved {count} new articles for {article_date}")
+        logger.info(f"Processed {count} articles for {article_date}")
         return count
     except Exception as e:
         logger.error(f"Error saving articles for {article_date}: {e}")
