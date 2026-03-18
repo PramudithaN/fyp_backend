@@ -361,6 +361,162 @@ class TestUploadPredictionEndpoints:
         assert response.status_code == 400
         assert response.json()["detail"] == "Uploaded file is empty"
 
+    def test_upload_predict_invalid_price_text(self, test_client):
+        """Upload should reject non-numeric price values with clear row errors."""
+        invalid_df = pd.DataFrame(
+            {
+                "date": ["2026-03-18"],
+                "price": ["abc"],
+            }
+        )
+        payload = self._excel_bytes_from_df(invalid_df)
+
+        response = test_client.post(
+            "/predict/upload-excel",
+            files={
+                "file": (
+                    "bad_price.xlsx",
+                    payload,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "Upload validation failed" in detail
+        assert "price must be a numeric value greater than 0" in detail
+
+    def test_upload_predict_invalid_date_format(self, test_client):
+        """Upload should reject rows where date is not YYYY-MM-DD."""
+        invalid_df = pd.DataFrame(
+            {
+                "date": ["03/18/2026"],
+                "price": [82.35],
+            }
+        )
+        payload = self._excel_bytes_from_df(invalid_df)
+
+        response = test_client.post(
+            "/predict/upload-excel",
+            files={
+                "file": (
+                    "bad_date.xlsx",
+                    payload,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "Upload validation failed" in detail
+        assert "date must be in YYYY-MM-DD format" in detail
+
+    def test_upload_predict_more_than_lookback_rows(self, test_client):
+        """Upload should reject files containing more than 30 rows."""
+        too_many_df = pd.DataFrame(
+            {
+                "date": pd.date_range(end=datetime.now(), periods=31, freq="D").strftime(
+                    "%Y-%m-%d"
+                ),
+                "price": np.linspace(80, 85, 31),
+            }
+        )
+        payload = self._excel_bytes_from_df(too_many_df)
+
+        response = test_client.post(
+            "/predict/upload-excel",
+            files={
+                "file": (
+                    "too_many.xlsx",
+                    payload,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+
+        assert response.status_code == 400
+        assert "at most 30 days" in response.json()["detail"]
+
+    @patch("app.main.run_prediction_from_uploaded_excel")
+    def test_upload_predict_allows_some_missing_prices(
+        self,
+        mock_upload_predict,
+        test_client,
+    ):
+        """Upload should accept files when some price rows are missing."""
+        mock_upload_predict.return_value = {
+            "data_source": "Uploaded Excel + Database Backfill + Sentiment History",
+            "last_price_date": "2026-03-18",
+            "last_price": 84.12,
+            "forecasts": [
+                {
+                    "date": "2026-03-19",
+                    "forecasted_price": 84.8,
+                    "forecasted_return": 0.01,
+                    "horizon": 1,
+                }
+            ],
+            "upload_window": {
+                "lookback_days": 30,
+                "window_start": "2026-02-17",
+                "window_end": "2026-03-18",
+                "uploaded_rows_used": 2,
+                "filled_from_database": 28,
+                "filled_by_carry": 0,
+            },
+            "resolved_price_window": [
+                {"date": "2026-03-18", "price": 84.12, "source": "uploaded"}
+            ],
+        }
+
+        df = pd.DataFrame(
+            {
+                "date": ["2026-03-16", "2026-03-17", "2026-03-18"],
+                "price": [82.1, "", 84.12],
+            }
+        )
+        payload = self._excel_bytes_from_df(df)
+
+        response = test_client.post(
+            "/predict/upload-excel",
+            files={
+                "file": (
+                    "some_missing_prices.xlsx",
+                    payload,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["success"] is True
+
+    def test_upload_predict_rejects_all_missing_prices(self, test_client):
+        """Upload should reject files when every price value is missing."""
+        df = pd.DataFrame(
+            {
+                "date": ["2026-03-16", "2026-03-17", "2026-03-18"],
+                "price": ["", None, np.nan],
+            }
+        )
+        payload = self._excel_bytes_from_df(df)
+
+        response = test_client.post(
+            "/predict/upload-excel",
+            files={
+                "file": (
+                    "all_missing_prices.xlsx",
+                    payload,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+        )
+
+        assert response.status_code == 400
+        assert "All price values are missing" in response.json()["detail"]
+
 
 class TestModelInfoEndpoint:
     """Tests for model info endpoint."""

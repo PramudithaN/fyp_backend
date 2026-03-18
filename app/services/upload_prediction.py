@@ -56,7 +56,7 @@ def build_upload_excel_template_bytes(lookback_days: int) -> bytes:
                 "YYYY-MM-DD",
                 "price must be numeric and > 0",
                 "If duplicate dates exist, latest row wins",
-                f"At least {days} rows recommended (model lookback={days})",
+                f"Upload up to {days} rows (model lookback={days})",
             ],
         }
     )
@@ -81,7 +81,101 @@ def _pick_column(columns: list[str], candidates: tuple[str, ...]) -> str | None:
     return None
 
 
-def parse_uploaded_price_excel(file_bytes: bytes, filename: str | None) -> pd.DataFrame:
+def _is_blank_cell(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    return bool(pd.isna(value))
+
+
+def _summarize_row_errors(messages: list[str], total_rows: int, shown_rows: int = 10) -> str:
+    if not messages:
+        return ""
+
+    visible = messages[:shown_rows]
+    summary = " ; ".join(visible)
+    hidden = max(total_rows - shown_rows, 0)
+    if hidden > 0:
+        summary += f" ; ... and {hidden} more row error(s)"
+    return summary
+
+
+def _parse_date_cell(raw_date: Any) -> tuple[pd.Timestamp | None, str | None]:
+    if _is_blank_cell(raw_date):
+        return None, "date is required"
+
+    if isinstance(raw_date, pd.Timestamp):
+        return raw_date, None
+
+    if isinstance(raw_date, datetime):
+        return pd.Timestamp(raw_date), None
+
+    if isinstance(raw_date, str):
+        value = raw_date.strip()
+        try:
+            parsed_date = datetime.strptime(value, "%Y-%m-%d")
+            return pd.Timestamp(parsed_date), None
+        except ValueError:
+            return None, "date must be in YYYY-MM-DD format"
+
+    return None, "date must be in YYYY-MM-DD format"
+
+
+def _parse_price_cell(raw_price: Any) -> tuple[float | None, str | None]:
+    if _is_blank_cell(raw_price):
+        return None, None
+
+    try:
+        parsed_price = float(raw_price.strip()) if isinstance(raw_price, str) else float(raw_price)
+    except (TypeError, ValueError):
+        return None, "price must be a numeric value greater than 0"
+
+    if not np.isfinite(parsed_price) or parsed_price <= 0:
+        return None, "price must be a numeric value greater than 0"
+
+    return parsed_price, None
+
+
+def _extract_validated_rows(non_empty_rows: pd.DataFrame) -> tuple[list[dict[str, Any]], list[str]]:
+    row_errors: list[str] = []
+    valid_rows: list[dict[str, Any]] = []
+
+    for original_idx, row in non_empty_rows.iterrows():
+        row_idx = int(original_idx) + 2
+        issues: list[str] = []
+
+        parsed_price, price_issue = _parse_price_cell(row["price"])
+        if price_issue:
+            issues.append(price_issue)
+
+        # Missing prices are allowed per-row; these rows are ignored.
+        if parsed_price is None and not price_issue:
+            continue
+
+        parsed_date, date_issue = _parse_date_cell(row["date"])
+        if date_issue:
+            issues.append(date_issue)
+
+        if issues:
+            row_errors.append(f"Row {row_idx}: {', '.join(issues)}")
+            continue
+
+        valid_rows.append(
+            {
+                "date": pd.to_datetime(parsed_date).normalize(),
+                "price": parsed_price,
+            }
+        )
+
+    return valid_rows, row_errors
+
+
+def parse_uploaded_price_excel(
+    file_bytes: bytes,
+    filename: str | None,
+    max_days: int | None = None,
+) -> pd.DataFrame:
     """Parse uploaded Excel and return standardized [date, price] rows."""
     safe_name = (filename or "").lower()
     if safe_name and not safe_name.endswith(SUPPORTED_EXTENSIONS):
@@ -107,18 +201,44 @@ def parse_uploaded_price_excel(file_bytes: bytes, filename: str | None) -> pd.Da
 
     parsed = raw[[date_col, price_col]].copy()
     parsed.columns = ["date", "price"]
-    parsed["date"] = pd.to_datetime(parsed["date"], errors="coerce").dt.tz_localize(None)
-    parsed["price"] = pd.to_numeric(parsed["price"], errors="coerce")
-    parsed = parsed.dropna(subset=["date", "price"])
-    parsed = parsed[parsed["price"] > 0]
 
-    if parsed.empty:
-        raise ValueError("No valid date/price rows found in uploaded Excel")
+    non_empty_rows = parsed[
+        ~(
+            parsed["date"].apply(_is_blank_cell)
+            & parsed["price"].apply(_is_blank_cell)
+        )
+    ].copy()
 
-    parsed["date"] = parsed["date"].dt.normalize()
-    parsed = parsed.drop_duplicates(subset=["date"], keep="last")
-    parsed = parsed.sort_values("date").reset_index(drop=True)
-    return parsed
+    if non_empty_rows.empty:
+        raise ValueError(
+            "No price data rows found. Add at least one row with both date and price values."
+        )
+
+    if non_empty_rows["price"].apply(_is_blank_cell).all():
+        raise ValueError(
+            "All price values are missing. Add at least one numeric price greater than 0."
+        )
+
+    if max_days is not None and len(non_empty_rows) > int(max_days):
+        raise ValueError(
+            f"Upload supports at most {int(max_days)} days, but {len(non_empty_rows)} rows were provided."
+        )
+
+    valid_rows, row_errors = _extract_validated_rows(non_empty_rows)
+
+    if row_errors:
+        error_summary = _summarize_row_errors(row_errors, len(row_errors))
+        raise ValueError(f"Upload validation failed: {error_summary}")
+
+    if not valid_rows:
+        raise ValueError(
+            "No valid date/price rows found in uploaded Excel. Ensure date uses YYYY-MM-DD and price is numeric > 0."
+        )
+
+    out = pd.DataFrame(valid_rows)
+    out = out.drop_duplicates(subset=["date"], keep="last")
+    out = out.sort_values("date").reset_index(drop=True)
+    return out
 
 
 def _build_lookback_price_window(
@@ -238,9 +358,13 @@ def run_prediction_from_uploaded_excel(
     filename: str | None,
 ) -> Dict[str, Any]:
     """Run prediction from uploaded Excel without storing uploaded rows in DB."""
-    uploaded_df = parse_uploaded_price_excel(file_bytes=file_bytes, filename=filename)
-
     lookback = int(model_artifacts.lookback)
+    uploaded_df = parse_uploaded_price_excel(
+        file_bytes=file_bytes,
+        filename=filename,
+        max_days=lookback,
+    )
+
     price_window_df, upload_stats = _build_lookback_price_window(
         uploaded_prices=uploaded_df,
         lookback_days=lookback,
