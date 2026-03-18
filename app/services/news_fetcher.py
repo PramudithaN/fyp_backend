@@ -15,6 +15,7 @@ import math
 import re
 import numpy as np
 import logging
+import yake
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
@@ -96,6 +97,146 @@ HEADLINE_STOP_WORDS = {
     "post",
     "opportunity",
     "opportunities",
+}
+
+# Rule-first visual overrides for recurring headline domains.
+DOMAIN_VISUAL_MAP = [
+    (
+        {"interest rate", "inflation", "fed", "federal reserve", "gdp", "recession"},
+        "stock market trading floor",
+        ["financial charts", "economy money"],
+    ),
+    (
+        {"wildfire", "fire", "blaze", "burn", "forest fire"},
+        "wildfire smoke aerial",
+        ["forest fire flames", "fire emergency"],
+    ),
+    (
+        {"flood", "flooding", "hurricane", "tornado", "earthquake", "storm", "tsunami"},
+        "natural disaster aerial view",
+        ["flood damage", "storm destruction"],
+    ),
+    (
+        {"election", "vote", "ballot", "candidate", "polling", "democrat", "republican"},
+        "voting booth ballot box",
+        ["election campaign rally", "democracy vote"],
+    ),
+    (
+        {"war", "military", "troops", "soldier", "attack", "conflict", "invasion", "airstrike"},
+        "military soldiers deployment",
+        ["conflict zone", "army troops"],
+    ),
+    (
+        {"protest", "rally", "demonstration", "march", "riot", "demonstrators"},
+        "protest crowd street",
+        ["demonstration rally", "civil protest"],
+    ),
+    (
+        {"vaccine", "covid", "pandemic", "virus", "outbreak", "disease", "infection"},
+        "medical laboratory research",
+        ["vaccine syringe", "hospital healthcare"],
+    ),
+    (
+        {"ai", "artificial intelligence", "machine learning", "robot", "automation", "chatgpt", "openai"},
+        "artificial intelligence technology",
+        ["robot automation", "computer technology"],
+    ),
+    (
+        {"semiconductor", "chip", "microchip", "processor", "nvidia", "intel", "apple silicon"},
+        "semiconductor microchip closeup",
+        ["computer processor", "technology chip"],
+    ),
+    (
+        {"climate", "global warming", "carbon", "emissions", "renewable", "solar", "wind energy"},
+        "climate change renewable energy",
+        ["solar panels wind turbines", "green energy"],
+    ),
+    (
+        {"oil", "gas", "energy", "opec", "fuel", "pipeline", "petroleum"},
+        "oil refinery pipeline",
+        ["energy fuel industry", "petroleum gas"],
+    ),
+    (
+        {"trade", "tariff", "sanction", "export", "import", "supply chain"},
+        "cargo shipping port containers",
+        ["international trade", "logistics supply chain"],
+    ),
+    (
+        {"space", "nasa", "rocket", "astronaut", "satellite", "moon", "mars", "launch"},
+        "rocket launch space",
+        ["astronaut space", "nasa mission"],
+    ),
+    (
+        {"crypto", "bitcoin", "blockchain", "ethereum", "nft"},
+        "cryptocurrency bitcoin digital",
+        ["blockchain technology", "digital currency"],
+    ),
+    (
+        {"merger", "acquisition", "ipo", "startup", "deal", "buyout"},
+        "business handshake deal",
+        ["corporate meeting boardroom", "business merger"],
+    ),
+    (
+        {"hospital", "surgery", "cancer", "drug", "medicine", "treatment", "patient", "health"},
+        "hospital medical care",
+        ["doctor patient healthcare", "medical treatment"],
+    ),
+    (
+        {"school", "university", "education", "student", "campus", "tuition"},
+        "students classroom university",
+        ["education learning", "school campus"],
+    ),
+    (
+        {"immigration", "border", "migrant", "refugee", "asylum"},
+        "border crossing migration",
+        ["refugee camp", "immigration border"],
+    ),
+    (
+        {"housing", "real estate", "mortgage", "rent", "property", "home price"},
+        "real estate house neighborhood",
+        ["housing market property", "home mortgage"],
+    ),
+    (
+        {"food", "agriculture", "farm", "crop", "drought", "harvest", "famine"},
+        "farm agriculture harvest",
+        ["food crops field", "agriculture farming"],
+    ),
+    (
+        {"cybersecurity", "hack", "data breach", "ransomware", "phishing"},
+        "cybersecurity hacker dark",
+        ["data security computer", "cyber attack"],
+    ),
+    (
+        {"car", "electric vehicle", "ev", "tesla", "automotive", "autonomous"},
+        "electric vehicle charging station",
+        ["automobile car technology", "ev car"],
+    ),
+    (
+        {"bank", "banking", "loan", "credit", "debt", "finance"},
+        "bank building finance",
+        ["banking money finance", "loan credit"],
+    ),
+]
+
+ORIENTATION_HINTS = {
+    "landscape": {"aerial", "panorama", "skyline", "field", "crowd", "city"},
+    "portrait": {"person", "leader", "president", "ceo", "doctor", "soldier", "protester"},
+}
+
+yake_extractor = yake.KeywordExtractor(
+    lan="en",
+    n=3,
+    dedupLim=0.7,
+    top=10,
+    features=None,
+)
+
+STOP_WORDS = {
+    "say", "says", "said", "new", "first", "last", "year", "years",
+    "week", "month", "day", "time", "amid", "after", "report", "reports",
+    "billion", "million", "percent", "according", "could", "would", "may",
+    "make", "get", "use", "take", "give", "come", "go", "set", "call",
+    "show", "us", "u.s", "uk", "world", "official", "plan", "plans", "move",
 }
 
 KEYWORD_SYNONYMS = {
@@ -241,6 +382,50 @@ def _dedupe_preserve_order(values: List[str]) -> List[str]:
     return deduped
 
 
+def _clean_text(text: str) -> str:
+    return re.sub(r"[\"'(){}\[\]]", "", text).strip().lower()
+
+
+def _domain_match(headline_lower: str) -> Optional[Tuple[str, List[str]]]:
+    for triggers, primary, fallbacks in DOMAIN_VISUAL_MAP:
+        if any(trigger in headline_lower for trigger in triggers):
+            return primary, fallbacks
+    return None
+
+
+def _yake_keywords(headline: str) -> List[str]:
+    raw = yake_extractor.extract_keywords(headline)
+    result: List[str] = []
+    for keyword, score in sorted(raw, key=lambda item: item[1]):
+        _ = score
+        cleaned = _clean_text(keyword)
+        words = cleaned.split()
+        if cleaned and not all(word in STOP_WORDS for word in words):
+            result.append(cleaned)
+    return _dedupe_preserve_order(result)
+
+
+def _infer_orientation(headline_lower: str) -> str:
+    for orientation, hints in ORIENTATION_HINTS.items():
+        if any(hint in headline_lower for hint in hints):
+            return orientation
+    return "landscape"
+
+
+def _build_query_from_terms(terms: List[str], max_words: int = 6) -> str:
+    seen: set[str] = set()
+    parts: List[str] = []
+    for term in terms:
+        for word in term.split():
+            if word in seen or word in STOP_WORDS:
+                continue
+            seen.add(word)
+            parts.append(word)
+            if len(parts) >= max_words:
+                return " ".join(parts)
+    return " ".join(parts)
+
+
 def _format_query_tokens(tokens: List[str]) -> str:
     return " ".join(token.replace("_", " ") for token in _dedupe_preserve_order(tokens)).strip()
 
@@ -372,8 +557,34 @@ def _build_image_search_query(title: str) -> str:
 
 def _build_fallback_image_queries(title: str) -> List[str]:
     """Build fallback Pexels queries from specific to broad."""
+    headline_lower = (title or "").lower()
+
+    domain_match = _domain_match(headline_lower)
+    yake_terms = _yake_keywords(title)
+
+    if domain_match:
+        primary, fallbacks = domain_match
+        # Keep domain precision, but append a few headline-specific terms to diversify results.
+        enriched_primary = _build_query_from_terms([primary, *yake_terms], max_words=7)
+        domain_candidates = [enriched_primary or primary, primary, *fallbacks]
+
+        keywords = _extract_headline_keywords(title)
+        structured = _build_structured_image_queries(keywords)
+        domain_candidates.extend(structured[:4])
+        domain_candidates.extend(BROAD_FALLBACK_IMAGE_QUERIES)
+        return _dedupe_preserve_order([
+            candidate.strip().lower()
+            for candidate in domain_candidates
+            if candidate and candidate.strip()
+        ])
+
     keywords = _extract_headline_keywords(title)
     candidates = _build_structured_image_queries(keywords)
+
+    # YAKE terms improve long-tail uniqueness when rule/theme terms are too broad.
+    yake_query = _build_query_from_terms(yake_terms, max_words=5)
+    if yake_query:
+        candidates.insert(0, yake_query)
 
     # Broad fallbacks for hard-to-match headlines.
     candidates.extend(BROAD_FALLBACK_IMAGE_QUERIES)
@@ -405,6 +616,7 @@ def _resolve_image_url_from_headline(
 ) -> str:
     """Resolve an image URL by trying multiple keyword queries for one headline."""
     queries = _build_fallback_image_queries(title)
+    orientation = _infer_orientation((title or "").lower())
 
     for query in queries:
         cached_image_url = _get_cached_image_query_result(query, cache)
@@ -416,7 +628,7 @@ def _resolve_image_url_from_headline(
         if _lookup_limit_reached(max_new_lookups, lookup_counter):
             break
 
-        image_url = _fetch_pexels_image_url(query)
+        image_url = _fetch_pexels_image_url(query, orientation=orientation)
 
         if lookup_counter is not None:
             lookup_counter["count"] = lookup_counter.get("count", 0) + 1
@@ -430,7 +642,7 @@ def _resolve_image_url_from_headline(
     return ""
 
 
-def _fetch_pexels_image_url(query: str) -> str:
+def _fetch_pexels_image_url(query: str, orientation: str = "landscape") -> str:
     """Fetch a relevant free-stock image URL from Pexels."""
     if not PEXELS_API_KEY:
         logger.debug("PEXELS_API_KEY not set — skipping image lookup for query: %s", query)
@@ -442,7 +654,7 @@ def _fetch_pexels_image_url(query: str) -> str:
     params = {
         "query": query,
         "per_page": max(1, PEXELS_PER_PAGE),
-        "orientation": "landscape",
+        "orientation": orientation,
         "size": "medium",
     }
 

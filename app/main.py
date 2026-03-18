@@ -59,6 +59,10 @@ from app.services.upload_prediction import (
     build_upload_excel_template_bytes,
 )
 from app.services.sentiment_service import sentiment_service
+from app.services.news_image_backfill import (
+    backfill_news_image_urls,
+    validate_backfill_date,
+)
 from app.services.scraper_scheduler import (
     get_scheduler_status,
     run_scraper_now,
@@ -513,7 +517,6 @@ async def get_news(
     except Exception as e:
         logger.error(f"Error fetching news articles: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get(
     "/historical/prices",
@@ -1032,6 +1035,60 @@ async def scraper_backfill(
         return result
     except Exception as e:
         logger.error("Backfill failed", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/news/backfill-images",
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": "Invalid date format or input parameters",
+        },
+        401: {
+            "model": ErrorResponse,
+            "description": "Missing or invalid X-Scraper-Key header",
+        },
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error during image backfill operation",
+        },
+    },
+)
+async def backfill_news_images(
+    start_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    end_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    limit: Annotated[int | None, Query(ge=1, le=5000)] = None,
+    reset: bool = False,
+    x_scraper_key: Annotated[str | None, Header()] = None,
+):
+    """Backfill missing image_url values for stored news articles using Pexels."""
+    if SCRAPER_API_KEY and x_scraper_key != SCRAPER_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Scraper-Key header")
+
+    try:
+        validated_start = validate_backfill_date(start_date) if start_date else None
+        validated_end = validate_backfill_date(end_date) if end_date else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
+
+    if validated_start and validated_end and validated_start > validated_end:
+        raise HTTPException(status_code=400, detail="start_date must be less than or equal to end_date")
+
+    try:
+        return await run_in_threadpool(
+            partial(
+                backfill_news_image_urls,
+                start_date=validated_start,
+                end_date=validated_end,
+                limit=limit,
+                reset=reset,
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Image backfill failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
