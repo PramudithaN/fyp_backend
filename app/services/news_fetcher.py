@@ -13,6 +13,7 @@ SENTIMENT COMPUTATION (matching Colab exactly):
 import os
 import math
 import re
+import hashlib
 import numpy as np
 import logging
 import yake
@@ -426,6 +427,81 @@ def _build_query_from_terms(terms: List[str], max_words: int = 6) -> str:
     return " ".join(parts)
 
 
+def _headline_specific_terms(title: str, keywords: List[str], max_terms: int = 5) -> List[str]:
+    """Extract additional non-generic terms to specialize image queries per headline."""
+    generic_terms = {
+        "oil",
+        "energy",
+        "industry",
+        "market",
+        "price",
+        "prices",
+        "business",
+        "sector",
+        "company",
+        "companies",
+        "group",
+        "groups",
+    }
+
+    seen = set()
+    terms: List[str] = []
+
+    for keyword in keywords:
+        if keyword in generic_terms:
+            continue
+        if keyword in seen:
+            continue
+        seen.add(keyword)
+        terms.append(keyword)
+        if len(terms) >= max_terms:
+            return terms
+
+    raw_words = re.findall(r"[a-zA-Z]{3,}", (title or "").lower())
+    for raw in raw_words:
+        normalized = KEYWORD_SYNONYMS.get(raw, raw)
+        if normalized in generic_terms:
+            continue
+        if normalized in STOP_WORDS or normalized in HEADLINE_STOP_WORDS:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        terms.append(normalized)
+        if len(terms) >= max_terms:
+            break
+
+    return terms
+
+
+def _build_headline_specific_query_variants(
+    title: str,
+    keywords: List[str],
+    base_queries: List[str],
+    max_variants: int = 4,
+) -> List[str]:
+    """Create query variants by appending headline-specific terms to strong base templates."""
+    if not base_queries:
+        return []
+
+    specific_terms = _headline_specific_terms(title, keywords, max_terms=5)
+    if not specific_terms:
+        return []
+
+    variants: List[str] = []
+    for base_query in base_queries[:2]:
+        base_words = set(base_query.split())
+        for term in specific_terms:
+            term_words = term.replace("_", " ").split()
+            if all(word in base_words for word in term_words):
+                continue
+            variants.append(f"{base_query} {term.replace('_', ' ')}".strip())
+            if len(variants) >= max_variants:
+                return _dedupe_preserve_order(variants)
+
+    return _dedupe_preserve_order(variants)
+
+
 def _format_query_tokens(tokens: List[str]) -> str:
     return " ".join(token.replace("_", " ") for token in _dedupe_preserve_order(tokens)).strip()
 
@@ -558,19 +634,36 @@ def _build_image_search_query(title: str) -> str:
 def _build_fallback_image_queries(title: str) -> List[str]:
     """Build fallback Pexels queries from specific to broad."""
     headline_lower = (title or "").lower()
+    keywords = _extract_headline_keywords(title)
+    structured_queries = _build_structured_image_queries(keywords)
+    specific_variants = _build_headline_specific_query_variants(
+        title,
+        keywords,
+        structured_queries,
+    )
 
     domain_match = _domain_match(headline_lower)
     yake_terms = _yake_keywords(title)
 
     if domain_match:
         primary, fallbacks = domain_match
-        # Keep domain precision, but append a few headline-specific terms to diversify results.
-        enriched_primary = _build_query_from_terms([primary, *yake_terms], max_words=7)
-        domain_candidates = [enriched_primary or primary, primary, *fallbacks]
+        domain_candidates: List[str] = []
+        if structured_queries:
+            domain_candidates.append(structured_queries[0])
 
-        keywords = _extract_headline_keywords(title)
-        structured = _build_structured_image_queries(keywords)
-        domain_candidates.extend(structured[:4])
+        domain_candidates.append(primary)
+        domain_candidates.extend(specific_variants)
+        domain_candidates.extend(fallbacks)
+        domain_candidates.extend(structured_queries[1:4])
+
+        # Keep a YAKE-enriched query, but only after domain- and rule-based intent.
+        enriched_primary = _build_query_from_terms([primary, *yake_terms], max_words=7)
+        if enriched_primary:
+            domain_candidates.append(enriched_primary)
+
+        if DEFAULT_OIL_QUERY not in domain_candidates:
+            domain_candidates.append(DEFAULT_OIL_QUERY)
+
         domain_candidates.extend(BROAD_FALLBACK_IMAGE_QUERIES)
         return _dedupe_preserve_order([
             candidate.strip().lower()
@@ -578,13 +671,16 @@ def _build_fallback_image_queries(title: str) -> List[str]:
             if candidate and candidate.strip()
         ])
 
-    keywords = _extract_headline_keywords(title)
-    candidates = _build_structured_image_queries(keywords)
+    candidates = list(structured_queries)
+    if candidates:
+        candidates = [candidates[0], *specific_variants, *candidates[1:]]
+    else:
+        candidates.extend(specific_variants)
 
     # YAKE terms improve long-tail uniqueness when rule/theme terms are too broad.
     yake_query = _build_query_from_terms(yake_terms, max_words=5)
     if yake_query:
-        candidates.insert(0, yake_query)
+        candidates.append(yake_query)
 
     # Broad fallbacks for hard-to-match headlines.
     candidates.extend(BROAD_FALLBACK_IMAGE_QUERIES)
@@ -608,6 +704,24 @@ def _lookup_limit_reached(
     )
 
 
+def _stable_page_for_title(title: str, max_page: int = 5) -> int:
+    """Pick a deterministic Pexels page for a title to diversify repeated queries."""
+    if max_page <= 1:
+        return 1
+
+    seed = (title or "").strip().lower()
+    if not seed:
+        return 1
+
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()
+    return (int(digest[:8], 16) % max_page) + 1
+
+
+def _build_image_cache_key(query: str, orientation: str, page: int) -> str:
+    """Cache key includes query + orientation + page to avoid one-image-for-all behavior."""
+    return f"{query.strip().lower()}|{orientation}|p{max(1, int(page))}"
+
+
 def _resolve_image_url_from_headline(
     title: str,
     cache: Optional[Dict[str, str]] = None,
@@ -617,9 +731,11 @@ def _resolve_image_url_from_headline(
     """Resolve an image URL by trying multiple keyword queries for one headline."""
     queries = _build_fallback_image_queries(title)
     orientation = _infer_orientation((title or "").lower())
+    page = _stable_page_for_title(title)
 
     for query in queries:
-        cached_image_url = _get_cached_image_query_result(query, cache)
+        cache_key = _build_image_cache_key(query, orientation, page)
+        cached_image_url = _get_cached_image_query_result(cache_key, cache)
         if cached_image_url is not None:
             if cached_image_url:
                 return cached_image_url
@@ -628,13 +744,17 @@ def _resolve_image_url_from_headline(
         if _lookup_limit_reached(max_new_lookups, lookup_counter):
             break
 
-        image_url = _fetch_pexels_image_url(query, orientation=orientation)
+        image_url = _fetch_pexels_image_url(
+            query,
+            orientation=orientation,
+            page=page,
+        )
 
         if lookup_counter is not None:
             lookup_counter["count"] = lookup_counter.get("count", 0) + 1
 
         if cache is not None:
-            cache[query] = image_url
+            cache[cache_key] = image_url
 
         if image_url:
             return image_url
@@ -642,7 +762,11 @@ def _resolve_image_url_from_headline(
     return ""
 
 
-def _fetch_pexels_image_url(query: str, orientation: str = "landscape") -> str:
+def _fetch_pexels_image_url(
+    query: str,
+    orientation: str = "landscape",
+    page: int = 1,
+) -> str:
     """Fetch a relevant free-stock image URL from Pexels."""
     if not PEXELS_API_KEY:
         logger.debug("PEXELS_API_KEY not set — skipping image lookup for query: %s", query)
@@ -654,6 +778,7 @@ def _fetch_pexels_image_url(query: str, orientation: str = "landscape") -> str:
     params = {
         "query": query,
         "per_page": max(1, PEXELS_PER_PAGE),
+        "page": max(1, int(page)),
         "orientation": orientation,
         "size": "medium",
     }

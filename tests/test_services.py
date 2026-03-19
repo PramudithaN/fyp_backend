@@ -453,6 +453,49 @@ class TestNewsFetcher:
         assert "renewable energy infrastructure" in queries
         assert "oil industry" in queries
 
+    def test_build_fallback_image_queries_adds_headline_specific_variant_early(self):
+        """Headline-specific terms should appear in early query variants before broad fallback-only terms."""
+        from app.services.news_fetcher import _build_fallback_image_queries
+
+        queries = _build_fallback_image_queries(
+            "Red Sea shipping route disruptions hit tanker rates"
+        )
+
+        early_queries = queries[:5]
+        assert any("disruptions" in query for query in early_queries)
+
+    def test_stable_page_for_title_is_deterministic_and_varies(self):
+        """Different titles should map to deterministic (often different) pages for visual diversity."""
+        from app.services.news_fetcher import _stable_page_for_title
+
+        titles = [
+            "OPEC signals production cut amid market volatility",
+            "US inventories rise as refinery demand softens",
+            "Brent crude steadies after shipping disruptions in Red Sea",
+            "China refinery throughput climbs on stronger fuel demand",
+            "Natural gas prices jump on pipeline outage in Europe",
+            "Iran export sanctions tighten global oil supply outlook",
+        ]
+
+        page_first = _stable_page_for_title(titles[0])
+        page_repeat = _stable_page_for_title(titles[0])
+        pages = [_stable_page_for_title(title) for title in titles]
+
+        assert page_first == page_repeat
+        assert all(1 <= page <= 5 for page in pages)
+        assert len(set(pages)) > 1
+
+    def test_image_cache_key_includes_page(self):
+        """Cache keys should differ when page differs to avoid one cached image across all titles."""
+        from app.services.news_fetcher import _build_image_cache_key
+
+        key_page_1 = _build_image_cache_key("oil refinery", "landscape", 1)
+        key_page_2 = _build_image_cache_key("oil refinery", "landscape", 2)
+
+        assert key_page_1 != key_page_2
+        assert key_page_1.endswith("|p1")
+        assert key_page_2.endswith("|p2")
+
 
 class TestFinBERTAnalyzer:
     """Tests for FinBERT sentiment analyzer."""
