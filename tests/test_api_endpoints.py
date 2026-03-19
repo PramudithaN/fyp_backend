@@ -32,8 +32,8 @@ class TestHealthEndpoint:
         # Verify market hours are correct for Brent Oil
         assert data["market_open_time"] == "02:00 UTC"
         assert data["market_close_time"] == "22:00 UTC"
-        assert "UTC" in data["timezone_info"]
-        assert "Brent" in data["timezone_info"]
+        # Timezone info is now from Yahoo Finance (real exchange timezone)
+        assert "Exchange timezone" in data["timezone_info"]
 
 
 class TestRootEndpoint:

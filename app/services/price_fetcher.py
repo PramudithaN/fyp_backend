@@ -183,69 +183,77 @@ def get_last_n_trading_days(prices: pd.DataFrame, n: int = 30) -> pd.DataFrame:
 
 def get_market_status(now_utc: Optional[datetime] = None) -> dict:
     """
-    Determine market status using trading-day logic with market hours.
+    Determine market status using Yahoo Finance API real-time data.
 
-    Brent Oil (ICE) Trading Hours:
-    - Main trading session: 02:00 UTC - 22:00 UTC (20 hours/day)
-    - Converted to common timezones:
-      * EST: 21:00 previous day - 17:00 same day
-      * GMT: 02:00 - 22:00 UTC
-
-    Rule:
-    - Monday to Friday: market open from 02:00 to 22:00 UTC
-    - Saturday/Sunday: market closed
+    Instead of hardcoded hours, fetches actual market state from Yahoo Finance
+    which reflects the true market conditions for Brent Oil futures (BZ=F).
 
     Returns:
         dict with keys:
-            - is_open (bool): True on trading days (Mon-Fri).
-            - market_state (str): "TRADING_DAY" or "NON_TRADING_DAY".
+            - is_open (bool): True if market is currently open (via Yahoo Finance marketState).
+            - market_state (str): "OPEN" or "CLOSED" (from Yahoo Finance).
             - message (str): Human-readable status string.
-            - market_open_time (str): Market open time (02:00 UTC).
-            - market_close_time (str): Market close time (22:00 UTC).
-            - timezone_info (str): Timezone reference for market hours.
+            - market_open_time (str): Typical market open time for this exchange.
+            - market_close_time (str): Typical market close time for this exchange.
+            - timezone_info (str): Exchange timezone reference.
     """
-    if now_utc is None:
-        now_utc = datetime.now(UTC)
-    elif now_utc.tzinfo is None:
-        # Naive datetimes are treated as UTC.
-        now_utc = now_utc.replace(tzinfo=UTC)
-    else:
-        # Always normalize aware datetimes to UTC before comparing to UTC hours.
-        now_utc = now_utc.astimezone(UTC)
-
-    is_trading_day = now_utc.weekday() < 5
-    market_open_utc = time(2, 0)
-    market_close_utc = time(22, 0)
-    is_within_market_hours = market_open_utc <= now_utc.time() < market_close_utc
-
-    if is_trading_day and is_within_market_hours:
+    try:
+        # Fetch real-time market status from Yahoo Finance
+        ticker = yf.Ticker(BRENT_TICKER)
+        info = ticker.info
+        
+        market_state_api = info.get("marketState", "UNKNOWN")
+        exchange_tz = info.get("exchangeTimezoneName", "UTC")
+        
+        # marketState can be: REGULAR, PRE, POST, CLOSED, etc.
+        # Treat REGULAR as market open, everything else as closed
+        is_open = market_state_api == "REGULAR"
+        
+        # Brent Oil (ICE) typical hours: 02:00-22:00 UTC (almost 24/5 trading)
+        # with ~2 hour break early morning UTC
         return {
-            "is_open": True,
-            "market_state": "TRADING_DAY",
-            "message": "Market open (trading hours)",
+            "is_open": is_open,
+            "market_state": market_state_api,
+            "message": f"Market {'open' if is_open else 'closed'} ({market_state_api})",
             "market_open_time": "02:00 UTC",
             "market_close_time": "22:00 UTC",
-            "timezone_info": "UTC (Brent Oil - ICE)",
+            "timezone_info": f"Exchange timezone: {exchange_tz}",
         }
-
-    if is_trading_day:
+    except Exception as e:
+        logger.warning(f"Failed to fetch market status from Yahoo Finance: {e}. Using fallback logic.")
+        
+        # Fallback: Use deterministic trading hours if API fails
+        if now_utc is None:
+            now_utc = datetime.now(UTC)
+        elif now_utc.tzinfo is None:
+            now_utc = now_utc.replace(tzinfo=UTC)
+        else:
+            now_utc = now_utc.astimezone(UTC)
+        
+        is_trading_day = now_utc.weekday() < 5
+        market_open_utc = time(2, 0)
+        market_close_utc = time(22, 0)
+        is_within_market_hours = market_open_utc <= now_utc.time() < market_close_utc
+        
+        if is_trading_day and is_within_market_hours:
+            return {
+                "is_open": True,
+                "market_state": "TRADING_DAY",
+                "message": "Market open (trading hours - fallback)",
+                "market_open_time": "02:00 UTC",
+                "market_close_time": "22:00 UTC",
+                "timezone_info": "UTC (Brent Oil - ICE) - FALLBACK MODE",
+            }
+        
         return {
             "is_open": False,
-            "market_state": "TRADING_DAY",
-            "message": "Market closed (outside trading hours)",
+            "market_state": "CLOSED",
+            "message": "Market closed (fallback logic)",
             "market_open_time": "02:00 UTC",
             "market_close_time": "22:00 UTC",
-            "timezone_info": "UTC (Brent Oil - ICE)",
+            "timezone_info": "UTC (Brent Oil - ICE) - FALLBACK MODE",
         }
 
-    return {
-        "is_open": False,
-        "market_state": "NON_TRADING_DAY",
-        "message": "Market closed (non-trading day)",
-        "market_open_time": "02:00 UTC",
-        "market_close_time": "22:00 UTC",
-        "timezone_info": "UTC (Brent Oil - ICE)",
-    }
 
 
 def validate_price_data(prices: pd.DataFrame, min_days: int = 30) -> bool:

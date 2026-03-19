@@ -159,34 +159,68 @@ class TestPriceFetcher:
     """Tests for price fetching service."""
 
     def test_get_market_status_open_during_trading_hours(self):
-        """Market should be open on trading days during 02:00-22:00 UTC."""
+        """Market should reflect Yahoo Finance marketState (REGULAR = open)."""
         from app.services.price_fetcher import get_market_status
+        from unittest.mock import patch
 
-        market = get_market_status(datetime(2026, 3, 16, 12, 0, 0))  # Monday
-        assert market["is_open"] is True
+        # Mock Yahoo Finance ticker to return REGULAR (market open)
+        with patch("app.services.price_fetcher.yf.Ticker") as mock_ticker:
+            mock_ticker.return_value.info = {"marketState": "REGULAR", "exchangeTimezoneName": "UTC"}
+            market = get_market_status()
+            assert market["is_open"] is True
+            assert market["market_state"] == "REGULAR"
 
-    def test_get_market_status_closed_outside_trading_hours(self):
-        """Market should be closed on trading days outside 02:00-22:00 UTC."""
+    def test_get_market_status_closed_yahoo_finance(self):
+        """Market should reflect Yahoo Finance marketState (CLOSED)."""
         from app.services.price_fetcher import get_market_status
+        from unittest.mock import patch
 
-        market = get_market_status(datetime(2026, 3, 16, 1, 0, 0))  # Monday
-        assert market["is_open"] is False
+        # Mock Yahoo Finance ticker to return CLOSED
+        with patch("app.services.price_fetcher.yf.Ticker") as mock_ticker:
+            mock_ticker.return_value.info = {"marketState": "CLOSED", "exchangeTimezoneName": "UTC"}
+            market = get_market_status()
+            assert market["is_open"] is False
+            assert market["market_state"] == "CLOSED"
 
-    def test_get_market_status_closed_non_trading_day(self):
-        """Market should be closed on non-trading days."""
+    def test_get_market_status_fallback_trading_day(self):
+        """Fallback logic: market open on trading days during 02:00-22:00 UTC."""
         from app.services.price_fetcher import get_market_status
+        from unittest.mock import patch
+        from datetime import datetime
 
-        market = get_market_status(datetime(2026, 3, 15, 12, 0, 0))  # Sunday
-        assert market["is_open"] is False
+        # Mock Yahoo Finance to fail, trigger fallback
+        with patch("app.services.price_fetcher.yf.Ticker") as mock_ticker:
+            mock_ticker.side_effect = Exception("API unavailable")
+            market = get_market_status(datetime(2026, 3, 16, 12, 0, 0))  # Monday
+            assert market["is_open"] is True
+            assert "FALLBACK" in market["timezone_info"]
+
+    def test_get_market_status_fallback_weekend(self):
+        """Fallback logic: market closed on weekends."""
+        from app.services.price_fetcher import get_market_status
+        from unittest.mock import patch
+        from datetime import datetime
+
+        # Mock Yahoo Finance to fail, trigger fallback
+        with patch("app.services.price_fetcher.yf.Ticker") as mock_ticker:
+            mock_ticker.side_effect = Exception("API unavailable")
+            market = get_market_status(datetime(2026, 3, 15, 12, 0, 0))  # Sunday
+            assert market["is_open"] is False
+            assert "FALLBACK" in market["timezone_info"]
 
     def test_get_market_status_converts_aware_datetime_to_utc(self):
-        """Timezone-aware datetimes should be normalized to UTC before evaluation."""
+        """Fallback logic: timezone-aware datetimes normalized to UTC."""
         from app.services.price_fetcher import get_market_status
+        from unittest.mock import patch
 
-        # 2026-03-16 23:00 at UTC+05:30 is 17:30 UTC (Monday), inside trading hours.
-        aware_local = datetime(2026, 3, 16, 23, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
-        market = get_market_status(aware_local)
-        assert market["is_open"] is True
+        # Mock Yahoo Finance to fail, trigger fallback with aware datetime
+        with patch("app.services.price_fetcher.yf.Ticker") as mock_ticker:
+            mock_ticker.side_effect = Exception("API unavailable")
+            # 2026-03-16 23:00 at UTC+05:30 is 17:30 UTC (Monday), inside trading hours.
+            aware_local = datetime(2026, 3, 16, 23, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            market = get_market_status(aware_local)
+            assert market["is_open"] is True
+            assert "FALLBACK" in market["timezone_info"]
 
     @patch("yfinance.Ticker")
     def test_fetch_latest_prices(self, mock_ticker):

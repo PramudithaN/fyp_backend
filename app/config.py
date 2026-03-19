@@ -58,6 +58,12 @@ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 PEXELS_PER_PAGE = int(os.getenv("PEXELS_PER_PAGE", "1"))
 PEXELS_TIMEOUT_SECONDS = int(os.getenv("PEXELS_TIMEOUT_SECONDS", "10"))
 
+# Hugging Face API configuration (for Mistral keyword extraction)
+HUGGING_FACE_API_TOKEN = os.getenv("HUGGING_FACE_API_TOKEN", "")
+HUGGING_FACE_LLM_MODEL = os.getenv(
+    "HUGGING_FACE_LLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct:fastest"
+)
+
 # Scraper API key — protects /scraper/run from unauthorized calls
 # Set this in Render env vars and as SCRAPER_API_KEY GitHub secret
 SCRAPER_API_KEY = os.getenv("SCRAPER_API_KEY", "")
@@ -81,6 +87,9 @@ PREDICTION_PRECOMPUTE_ENABLED = (
 PREDICTION_PRECOMPUTE_INTERVAL_SECONDS = int(
     os.getenv("PREDICTION_PRECOMPUTE_INTERVAL_SECONDS", "900")
 )
+
+# News API performance controls
+NEWS_CACHE_TTL_SECONDS = float(os.getenv("NEWS_CACHE_TTL_SECONDS", "300"))
 
 # Web scraper configuration
 SCRAPER_USER_AGENT = (
