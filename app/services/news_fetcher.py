@@ -447,10 +447,16 @@ def _headline_specific_terms(title: str, keywords: List[str], max_terms: int = 5
     seen = set()
     terms: List[str] = []
 
+    def _is_allowed(term: str) -> bool:
+        return (
+            term not in generic_terms
+            and term not in STOP_WORDS
+            and term not in HEADLINE_STOP_WORDS
+            and term not in seen
+        )
+
     for keyword in keywords:
-        if keyword in generic_terms:
-            continue
-        if keyword in seen:
+        if not _is_allowed(keyword):
             continue
         seen.add(keyword)
         terms.append(keyword)
@@ -460,11 +466,7 @@ def _headline_specific_terms(title: str, keywords: List[str], max_terms: int = 5
     raw_words = re.findall(r"[a-zA-Z]{3,}", (title or "").lower())
     for raw in raw_words:
         normalized = KEYWORD_SYNONYMS.get(raw, raw)
-        if normalized in generic_terms:
-            continue
-        if normalized in STOP_WORDS or normalized in HEADLINE_STOP_WORDS:
-            continue
-        if normalized in seen:
+        if not _is_allowed(normalized):
             continue
         seen.add(normalized)
         terms.append(normalized)
@@ -713,7 +715,7 @@ def _stable_page_for_title(title: str, max_page: int = 5) -> int:
     if not seed:
         return 1
 
-    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
     return (int(digest[:8], 16) % max_page) + 1
 
 
@@ -1151,6 +1153,63 @@ def compute_sentiment_features(
 
 
 
+def _compute_sentiments_for_articles(
+    articles: List[Dict[str, Any]],
+    use_finbert: bool,
+) -> List[float]:
+    texts = _extract_texts_from_articles(articles)
+    sentiments = None
+    if use_finbert:
+        sentiments = _analyze_with_finbert(texts)
+    if not sentiments:
+        sentiments = _analyze_with_simple_sentiment(articles)
+    return sentiments
+
+
+def _resolve_image_urls_for_articles(articles: List[Dict[str, Any]]) -> List[str]:
+    image_cache: Dict[str, str] = {}
+    lookup_counter: Dict[str, int] = {"count": 0}
+    urls: List[str] = []
+    for article in articles:
+        resolved = _resolve_image_url_from_headline(
+            title=article.get("title", ""),
+            cache=image_cache,
+            max_new_lookups=MAX_PEXELS_LOOKUPS_PER_RUN,
+            lookup_counter=lookup_counter,
+        )
+        # Always persist a non-empty image URL for frontend cards.
+        urls.append(resolved or DEFAULT_ARTICLE_IMAGE_URL)
+    return urls
+
+
+def _build_enriched_articles(
+    articles: List[Dict[str, Any]],
+    all_sentiments: List[float],
+    image_urls: List[str],
+) -> List[Dict[str, Any]]:
+    enriched: List[Dict[str, Any]] = []
+    for idx, article in enumerate(articles):
+        score = all_sentiments[idx] if idx < len(all_sentiments) else 0.0
+        image_url = image_urls[idx] if idx < len(image_urls) else DEFAULT_ARTICLE_IMAGE_URL
+
+        enriched.append(
+            {
+                "title": article.get("title", ""),
+                "description": article.get("description", ""),
+                "url": article.get("url"),
+                "image_url": image_url,
+                "source": (
+                    article["source"]["name"]
+                    if isinstance(article.get("source"), dict)
+                    else str(article.get("source", ""))
+                ),
+                "published_at": article.get("publishedAt", ""),
+                "sentiment_score": round(float(score), 6),
+            }
+        )
+    return enriched
+
+
 def compute_sentiment_features_with_articles(
     articles: List[Dict[str, Any]], sentiment_mode: str = None
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -1178,57 +1237,14 @@ def compute_sentiment_features_with_articles(
         (sentiment_mode == "finbert") if sentiment_mode else (SENTIMENT_MODE == "finbert")
     )
 
-    def _compute_all_sentiments() -> List[float]:
-        texts = _extract_texts_from_articles(articles)
-        sentiments = None
-        if use_finbert:
-            sentiments = _analyze_with_finbert(texts)
-        if not sentiments:
-            sentiments = _analyze_with_simple_sentiment(articles)
-        return sentiments
-
-    def _resolve_all_images() -> List[str]:
-        image_cache: Dict[str, str] = {}
-        lookup_counter: Dict[str, int] = {"count": 0}
-        urls: List[str] = []
-        for article in articles:
-            resolved = _resolve_image_url_from_headline(
-                title=article.get("title", ""),
-                cache=image_cache,
-                max_new_lookups=MAX_PEXELS_LOOKUPS_PER_RUN,
-                lookup_counter=lookup_counter,
-            )
-            # Always persist a non-empty image URL for frontend cards.
-            urls.append(resolved or DEFAULT_ARTICLE_IMAGE_URL)
-        return urls
-
     with ThreadPoolExecutor(max_workers=2) as executor:
-        sentiments_future = executor.submit(_compute_all_sentiments)
-        images_future = executor.submit(_resolve_all_images)
+        sentiments_future = executor.submit(_compute_sentiments_for_articles, articles, use_finbert)
+        images_future = executor.submit(_resolve_image_urls_for_articles, articles)
 
         all_sentiments = sentiments_future.result()
         image_urls = images_future.result()
 
-    enriched = []
-    for idx, article in enumerate(articles):
-        score = all_sentiments[idx] if idx < len(all_sentiments) else 0.0
-        image_url = image_urls[idx] if idx < len(image_urls) else DEFAULT_ARTICLE_IMAGE_URL
-
-        enriched.append(
-            {
-                "title": article.get("title", ""),
-                "description": article.get("description", ""),
-                "url": article.get("url"),
-                "image_url": image_url,
-                "source": (
-                    article["source"]["name"]
-                    if isinstance(article.get("source"), dict)
-                    else str(article.get("source", ""))
-                ),
-                "published_at": article.get("publishedAt", ""),
-                "sentiment_score": round(float(score), 6),
-            }
-        )
+    enriched = _build_enriched_articles(articles, all_sentiments, image_urls)
 
     return _compute_sentiment_dict(all_sentiments, len(articles)), enriched
 

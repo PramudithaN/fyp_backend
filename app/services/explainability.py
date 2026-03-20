@@ -25,20 +25,18 @@ from functools import lru_cache
 import time
 
 try:
-    import shap
-    from shap import Explainer
+    import shap  # pyright: ignore[reportMissingImports]
 except ImportError:
     shap = None
 
 try:
-    import timeshap
-    from timeshap.explainer import local_report
+    import timeshap  # pyright: ignore[reportMissingImports]
+    from timeshap.explainer import local_report  # pyright: ignore[reportMissingImports]
 except ImportError:
     timeshap = None
 
 try:
-    import lime
-    import lime.text
+    import lime  # pyright: ignore[reportMissingImports]
 except ImportError:
     lime = None
 
@@ -172,7 +170,7 @@ class ExplainabilityService:
         try:
             # Step 1: Generate prediction and fetch data
             logger.info("Step 1: Generating prediction...")
-            prediction_result, prices_df, sentiment_df = self._fetch_prediction_data()
+            prediction_result, prices_df, _ = self._fetch_prediction_data()
 
             # Step 2: ARIMA explainability
             logger.info("Step 2: Computing ARIMA decomposition...")
@@ -180,11 +178,11 @@ class ExplainabilityService:
 
             # Step 3: GRU explainability
             logger.info("Step 3: Computing GRU TimeSHAP attribution...")
-            gru_explanation = self._explain_gru(prices_df, sentiment_df)
+            gru_explanation = self._explain_gru(prices_df)
 
             # Step 4: XGBoost explainability
             logger.info("Step 4: Computing XGBoost SHAP values...")
-            xgb_explanation = self._explain_xgboost(prices_df, sentiment_df)
+            xgb_explanation = self._explain_xgboost(prices_df)
 
             # Step 5: Sentiment explainability
             logger.info("Step 5: Analyzing sentiment headlines...")
@@ -373,9 +371,7 @@ class ExplainabilityService:
                 "forecast_mean": last_price,
             }
 
-    def _explain_gru(
-        self, prices_df: pd.DataFrame, sentiment_df: pd.DataFrame
-    ) -> Dict[str, Any]:
+    def _explain_gru(self, prices_df: pd.DataFrame) -> Dict[str, Any]:
         """
         Extract GRU timestep attributions using TimeSHAP.
 
@@ -394,8 +390,8 @@ class ExplainabilityService:
             # then prepare_mid_features returns numpy (1, lookback, n_features)
             from app.services.feature_engineering import engineer_all_features, prepare_mid_features
 
-            sentiment_df = get_sentiment_history(days=LOOKBACK + 30)
-            feat_df = engineer_all_features(prices_df, sentiment_df)
+            recent_sentiment_df = get_sentiment_history(days=LOOKBACK + 30)
+            feat_df = engineer_all_features(prices_df, recent_sentiment_df)
             if feat_df is None or len(feat_df) < 2:
                 logger.warning("Insufficient GRU features for TimeSHAP")
                 return {"top_timesteps": [], "method": "insufficient_data"}
@@ -446,9 +442,7 @@ class ExplainabilityService:
             logger.warning(f"GRU TimeSHAP failed: {e}")
             return {"top_timesteps": [], "method": "failed"}
 
-    def _explain_xgboost(
-        self, prices_df: pd.DataFrame, sentiment_df: pd.DataFrame
-    ) -> Dict[str, Any]:
+    def _explain_xgboost(self, prices_df: pd.DataFrame) -> Dict[str, Any]:
         """
         Extract XGBoost feature importances using SHAP TreeExplainer.
 
@@ -467,8 +461,8 @@ class ExplainabilityService:
                 get_hf_features,
             )
 
-            sentiment_df = get_sentiment_history(days=LOOKBACK + 30)
-            feat_df = engineer_all_features(prices_df, sentiment_df)
+            recent_sentiment_df = get_sentiment_history(days=LOOKBACK + 30)
+            feat_df = engineer_all_features(prices_df, recent_sentiment_df)
             if feat_df is None or len(feat_df) == 0:
                 logger.warning("Insufficient XGBoost features")
                 return {"top_features": [], "method": "insufficient_data"}
@@ -491,26 +485,12 @@ class ExplainabilityService:
 
             # Compute SHAP values
             explainer = shap.TreeExplainer(xgb_model)
-            shap_values = explainer.shap_values(x_today)
-
-            # Handle numpy or list output
-            if isinstance(shap_values, list):
-                shap_values = shap_values[0] if len(shap_values) > 0 else np.array([])
-            if isinstance(shap_values, np.ndarray):
-                shap_values = shap_values.flatten()
-
-            # Extract top 5 features by absolute SHAP value
-            top_features = []
-            if len(shap_values) > 0:
-                for idx in np.argsort(np.abs(shap_values))[-5:][::-1]:
-                    feature_name = feature_names[idx] if idx < len(feature_names) else f"feature_{idx}"
-                    top_features.append(
-                        {
-                            "feature_name": feature_name,
-                            "shap_value": float(shap_values[idx]),
-                            "feature_value": float(x_today[0, idx]),
-                        }
-                    )
+            shap_values = self._flatten_shap_values(explainer.shap_values(x_today))
+            top_features = self._build_top_shap_features(
+                shap_values,
+                feature_names,
+                x_today,
+            )
 
             return {
                 "top_features": top_features,
@@ -521,6 +501,86 @@ class ExplainabilityService:
         except Exception as e:
             logger.warning(f"XGBoost SHAP failed: {e}")
             return {"top_features": [], "method": "failed"}
+
+    def _flatten_shap_values(self, raw_shap_values: Any) -> np.ndarray:
+        """Normalize SHAP outputs to a flat numpy array."""
+        shap_values = raw_shap_values
+        if isinstance(shap_values, list):
+            shap_values = shap_values[0] if len(shap_values) > 0 else np.array([])
+        if isinstance(shap_values, np.ndarray):
+            return shap_values.flatten()
+        return np.array([])
+
+    def _build_top_shap_features(
+        self,
+        shap_values: np.ndarray,
+        feature_names: List[str],
+        x_today: np.ndarray,
+        top_k: int = 5,
+    ) -> List[Dict[str, float | str]]:
+        """Build top feature rows sorted by absolute SHAP value."""
+        if len(shap_values) == 0:
+            return []
+
+        top_features: List[Dict[str, float | str]] = []
+        for idx in np.argsort(np.abs(shap_values))[-top_k:][::-1]:
+            feature_name = feature_names[idx] if idx < len(feature_names) else f"feature_{idx}"
+            top_features.append(
+                {
+                    "feature_name": feature_name,
+                    "shap_value": float(shap_values[idx]),
+                    "feature_value": float(x_today[0, idx]),
+                }
+            )
+        return top_features
+
+    def _sentiment_label(self, score: float) -> str:
+        if score > 0:
+            return "bullish"
+        if score < 0:
+            return "bearish"
+        return "neutral"
+
+    def _prepare_scored_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Extract title/score/description for recent articles, skipping malformed rows."""
+        articles_with_score = []
+        for article in articles[:10]:
+            try:
+                title = article.get("title", "")
+                score = article.get("sentiment_score", 0.0)
+                articles_with_score.append(
+                    {
+                        "title": title,
+                        "score": float(score),
+                        "description": article.get("description", ""),
+                    }
+                )
+            except Exception as e:
+                logger.debug(f"Error processing article: {e}")
+                continue
+        return articles_with_score
+
+    def _build_sentiment_headline(self, article: Dict[str, Any]) -> Dict[str, Any] | None:
+        """Create one headline explanation row from an article record."""
+        try:
+            title = article["title"]
+            score = float(article["score"])
+            words = title.lower().split()
+            lime_words = [
+                word
+                for word in words
+                if len(word) > 4 and word not in ["price", "market", "oil", "brent"]
+            ][:5]
+
+            return {
+                "headline": title,
+                "sentiment_score": score,
+                "sentiment_label": self._sentiment_label(score),
+                "top_keywords": lime_words,
+            }
+        except Exception as e:
+            logger.debug(f"Error with LIME on article: {e}")
+            return None
 
     def _explain_sentiment(self) -> Dict[str, Any]:
         """
@@ -545,21 +605,7 @@ class ExplainabilityService:
                 return {"top_headlines": [], "method": "no_data"}
 
             # Sort by sentiment magnitude
-            articles_with_score = []
-            for article in articles[:10]:  # Limit to 10 to avoid expensive LIME
-                try:
-                    title = article.get("title", "")
-                    score = article.get("sentiment_score", 0.0)
-                    articles_with_score.append(
-                        {
-                            "title": title,
-                            "score": float(score),
-                            "description": article.get("description", ""),
-                        }
-                    )
-                except Exception as e:
-                    logger.debug(f"Error processing article: {e}")
-                    continue
+            articles_with_score = self._prepare_scored_articles(articles)
 
             # Sort by absolute sentiment and take top 3
             sorted_articles = sorted(
@@ -569,28 +615,9 @@ class ExplainabilityService:
             # Apply LIME to get word importance
             top_headlines = []
             for article in sorted_articles:
-                try:
-                    title = article["title"]
-                    score = article["score"]
-
-                    # Simple word importance: extract significant terms
-                    # (full LIME requires classifier, so we use keyword extraction)
-                    words = title.lower().split()
-                    lime_words = [
-                        w for w in words if len(w) > 4 and w not in ["price", "market", "oil", "brent"]
-                    ][:5]
-
-                    top_headlines.append(
-                        {
-                            "headline": title,
-                            "sentiment_score": float(score),
-                            "sentiment_label": "bullish" if score > 0 else "bearish" if score < 0 else "neutral",
-                            "top_keywords": lime_words,
-                        }
-                    )
-                except Exception as e:
-                    logger.debug(f"Error with LIME on article: {e}")
-                    continue
+                headline = self._build_sentiment_headline(article)
+                if headline is not None:
+                    top_headlines.append(headline)
 
             return {
                 "top_headlines": top_headlines,
@@ -615,8 +642,6 @@ class ExplainabilityService:
         Compute final prediction with confidence interval and top global features.
         """
         # Extract model predictions
-        arima_pred = arima_exp.get("forecast_mean", prediction["last_price"])
-
         # Get ensemble weights from meta model
         model_weights = {
             "arima": 0.25,

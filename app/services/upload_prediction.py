@@ -258,11 +258,13 @@ def _build_lookback_price_window(
     )
 
     uploaded = uploaded_prices.rename(columns={"price": "uploaded_price"})
-    merged = window_df.merge(uploaded, on="date", how="left")
+    uploaded = uploaded.drop_duplicates(subset=["date"], keep="last")
+    merged = window_df.merge(uploaded, on="date", how="left", validate="one_to_one")
 
     if not db_prices.empty:
         db_subset = db_prices[["date", "price"]].rename(columns={"price": "db_price"})
-        merged = merged.merge(db_subset, on="date", how="left")
+        db_subset = db_subset.drop_duplicates(subset=["date"], keep="last")
+        merged = merged.merge(db_subset, on="date", how="left", validate="one_to_one")
     else:
         merged["db_price"] = np.nan
 
@@ -328,7 +330,8 @@ def _build_sentiment_window(start_date: pd.Timestamp, end_date: pd.Timestamp) ->
     sent = sentiment_df.copy()
     sent["date"] = pd.to_datetime(sent["date"]).dt.normalize()
 
-    merged = target.merge(sent, on="date", how="left")
+    sent = sent.drop_duplicates(subset=["date"], keep="last")
+    merged = target.merge(sent, on="date", how="left", validate="one_to_one")
 
     for col in [
         "daily_sentiment",
