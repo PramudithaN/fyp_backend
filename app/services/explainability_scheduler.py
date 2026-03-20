@@ -63,7 +63,7 @@ def init_scheduler() -> AsyncIOScheduler:
     return _scheduler
 
 
-async def shutdown_scheduler() -> None:
+def shutdown_scheduler() -> None:
     """
     Shutdown the APScheduler.
 
@@ -77,7 +77,7 @@ async def shutdown_scheduler() -> None:
         _scheduler = None
 
 
-async def run_daily_explainability_job() -> None:
+def run_daily_explainability_job() -> None:
     """
     Execute the daily explainability pipeline.
 
@@ -108,7 +108,7 @@ async def run_daily_explainability_job() -> None:
         logger.error(f"Daily explainability job failed: {e}", exc_info=True)
 
 
-async def trigger_explainability_job_now() -> dict:
+def trigger_explainability_job_now() -> dict:
     """
     Manually trigger the explainability job (for testing/admin).
 

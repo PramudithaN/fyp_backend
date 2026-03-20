@@ -456,7 +456,7 @@ async def lifespan(app: FastAPI):
     try:
         from app.services.explainability_scheduler import shutdown_scheduler
 
-        await shutdown_scheduler()
+        shutdown_scheduler()
     except Exception as e:
         logger.warning(f"Explainability scheduler shutdown failed: {e}")
 
