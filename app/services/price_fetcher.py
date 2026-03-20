@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 _LATEST_PRICES_CACHE_TTL_SECONDS = 120.0
 _LIVE_SNAPSHOT_CACHE_TTL_SECONDS = 20.0
+MARKET_OPEN_TIME_UTC = "02:00 UTC"
+MARKET_CLOSE_TIME_UTC = "22:00 UTC"
 _prices_cache_lock = RLock()
 _prices_cache: Dict[tuple[int, str], tuple[float, pd.DataFrame]] = {}
 _snapshot_cache_lock = RLock()
@@ -215,8 +217,8 @@ def get_market_status(now_utc: Optional[datetime] = None) -> dict:
             "is_open": is_open,
             "market_state": market_state_api,
             "message": f"Market {'open' if is_open else 'closed'} ({market_state_api})",
-            "market_open_time": "02:00 UTC",
-            "market_close_time": "22:00 UTC",
+            "market_open_time": MARKET_OPEN_TIME_UTC,
+            "market_close_time": MARKET_CLOSE_TIME_UTC,
             "timezone_info": f"Exchange timezone: {exchange_tz}",
         }
     except Exception as e:
@@ -240,8 +242,8 @@ def get_market_status(now_utc: Optional[datetime] = None) -> dict:
                 "is_open": True,
                 "market_state": "TRADING_DAY",
                 "message": "Market open (trading hours - fallback)",
-                "market_open_time": "02:00 UTC",
-                "market_close_time": "22:00 UTC",
+                "market_open_time": MARKET_OPEN_TIME_UTC,
+                "market_close_time": MARKET_CLOSE_TIME_UTC,
                 "timezone_info": "UTC (Brent Oil - ICE) - FALLBACK MODE",
             }
         
@@ -249,8 +251,8 @@ def get_market_status(now_utc: Optional[datetime] = None) -> dict:
             "is_open": False,
             "market_state": "CLOSED",
             "message": "Market closed (fallback logic)",
-            "market_open_time": "02:00 UTC",
-            "market_close_time": "22:00 UTC",
+            "market_open_time": MARKET_OPEN_TIME_UTC,
+            "market_close_time": MARKET_CLOSE_TIME_UTC,
             "timezone_info": "UTC (Brent Oil - ICE) - FALLBACK MODE",
         }
 

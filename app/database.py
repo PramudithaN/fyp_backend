@@ -1815,19 +1815,8 @@ def get_actual_vs_predicted_until(
 
 def add_explanation(
     explanation_date: str,
-    prediction: float,
-    confidence_interval_lower: float,
-    confidence_interval_upper: float,
-    arima_contribution: float,
-    gru_mid_contribution: float,
-    gru_sent_contribution: float,
-    xgb_hf_contribution: float,
-    agreement_score: float,
-    confidence_level: str,
-    top_shap_features: List[Dict[str, Any]],
-    sentiment_headlines: List[Dict[str, Any]],
+    aggregated: Dict[str, Any],
     explanation_text: str,
-    model_weights: Dict[str, float],
     generated_at: str,
     computation_time_seconds: float,
 ) -> int:
@@ -1836,16 +1825,8 @@ def add_explanation(
 
     Args:
         explanation_date: Date string (YYYY-MM-DD) when the explanation was generated.
-        prediction: The predicted price.
-        confidence_interval_lower/upper: Confidence bounds.
-        arima_contribution, gru_mid_contribution, gru_sent_contribution, xgb_hf_contribution:
-            Model-specific contributions to the final price.
-        agreement_score: Standard deviation of model predictions / mean (0.0 = low, 1.0+ = high disagreement).
-        confidence_level: "high" if agreement_score < 0.05, else "moderate".
-        top_shap_features: List of top 7 SHAP feature dicts.
-        sentiment_headlines: List of top 3 sentiment headline dicts.
+        aggregated: Unified explanation payload with predictions, confidence, features, and model weights.
         explanation_text: Plain English narrative (3-sentence explanation).
-        model_weights: Dict of model names to ensemble weights.
         generated_at: ISO timestamp when computation occurred.
         computation_time_seconds: How long the computation took.
 
@@ -1867,19 +1848,19 @@ def add_explanation(
             """,
             (
                 explanation_date,
-                prediction,
-                confidence_interval_lower,
-                confidence_interval_upper,
-                arima_contribution,
-                gru_mid_contribution,
-                gru_sent_contribution,
-                xgb_hf_contribution,
-                agreement_score,
-                confidence_level,
-                json.dumps(top_shap_features),
-                json.dumps(sentiment_headlines),
+                aggregated["prediction"],
+                aggregated["confidence_interval_lower"],
+                aggregated["confidence_interval_upper"],
+                aggregated["arima_contribution"],
+                aggregated["gru_mid_contribution"],
+                aggregated["gru_sent_contribution"],
+                aggregated["xgb_hf_contribution"],
+                aggregated["agreement_score"],
+                aggregated["confidence_level"],
+                json.dumps(aggregated["top_features"]),
+                json.dumps(aggregated["sentiment_headlines"]),
                 explanation_text,
-                json.dumps(model_weights),
+                json.dumps(aggregated["model_weights"]),
                 generated_at,
                 computation_time_seconds,
             ),

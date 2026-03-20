@@ -56,7 +56,7 @@ except ImportError:
     def turso_execute(conn, query: str, params=()):
         return conn.execute(query, params)
 
-    def turso_commit(conn):
+    def turso_commit(_conn):
         # libsql_client executes each statement immediately.
         return None
 

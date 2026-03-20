@@ -875,19 +875,8 @@ class ExplainabilityService:
 
         return add_explanation(
             explanation_date=explanation_date,
-            prediction=aggregated["prediction"],
-            confidence_interval_lower=aggregated["confidence_interval_lower"],
-            confidence_interval_upper=aggregated["confidence_interval_upper"],
-            arima_contribution=aggregated["arima_contribution"],
-            gru_mid_contribution=aggregated["gru_mid_contribution"],
-            gru_sent_contribution=aggregated["gru_sent_contribution"],
-            xgb_hf_contribution=aggregated["xgb_hf_contribution"],
-            agreement_score=aggregated["agreement_score"],
-            confidence_level=aggregated["confidence_level"],
-            top_shap_features=aggregated["top_features"],
-            sentiment_headlines=aggregated["sentiment_headlines"],
+            aggregated=aggregated,
             explanation_text=explanation_text,
-            model_weights=aggregated["model_weights"],
             generated_at=datetime.now().isoformat(),
             computation_time_seconds=computation_time,
         )
