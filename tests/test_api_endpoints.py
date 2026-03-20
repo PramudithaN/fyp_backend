@@ -154,6 +154,7 @@ class TestNewsEndpoint:
 class TestPredictEndpoint:
     """Tests for prediction endpoint."""
 
+    @patch("app.main.get_market_status")
     @patch("app.main.fetch_live_price_snapshot")
     @patch("app.main.prediction_service.predict")
     @patch("app.main._sync_latest_prices")
@@ -162,6 +163,7 @@ class TestPredictEndpoint:
         mock_sync_prices,
         mock_predict,
         mock_live_snapshot,
+        mock_get_market_status,
         test_client,
         sample_prices_df,
     ):
@@ -172,6 +174,14 @@ class TestPredictEndpoint:
             "as_of": "2026-03-17T10:00:00",
             "as_of_date": "2026-03-17",
             "source": "yahoo_finance_intraday",
+        }
+        mock_get_market_status.return_value = {
+            "is_open": True,
+            "market_state": "REGULAR",
+            "message": "Market open (REGULAR)",
+            "market_open_time": "01:00 UTC",
+            "market_close_time": "23:00 UTC",
+            "timezone_info": "Exchange timezone: Europe/London",
         }
 
         # Mock prediction result
@@ -195,6 +205,10 @@ class TestPredictEndpoint:
         assert len(data["forecasts"]) == 14
         assert data["last_price"] == pytest.approx(92.0)
         assert data["last_price_date"] == "2026-03-17"
+        assert data["is_market_open"] is True
+        assert data["market_open_time"] == "01:00 UTC"
+        assert data["market_close_time"] == "23:00 UTC"
+        assert data["timezone_info"] == "Exchange timezone: Europe/London"
         mock_sync_prices.assert_called_once_with(lookback_days=120)
         synced_prices = mock_predict.call_args.kwargs["prices"]
         pd.testing.assert_frame_equal(synced_prices, sample_prices_df)
@@ -285,8 +299,9 @@ class TestUploadPredictionEndpoints:
         )
         assert response.content[:2] == b"PK"
 
+    @patch("app.main.get_market_status")
     @patch("app.main.run_prediction_from_uploaded_excel")
-    def test_upload_predict_success(self, mock_upload_predict, test_client):
+    def test_upload_predict_success(self, mock_upload_predict, mock_get_market_status, test_client):
         """Upload endpoint should return model payload for valid excel uploads."""
         mock_upload_predict.return_value = {
             "data_source": "Uploaded Excel + Database Backfill + Sentiment History",
@@ -311,6 +326,14 @@ class TestUploadPredictionEndpoints:
             "resolved_price_window": [
                 {"date": "2026-03-18", "price": 84.12, "source": "uploaded"}
             ],
+        }
+        mock_get_market_status.return_value = {
+            "is_open": False,
+            "market_state": "CLOSED",
+            "message": "Market closed (CLOSED)",
+            "market_open_time": "02:00 UTC",
+            "market_close_time": "22:00 UTC",
+            "timezone_info": "Exchange timezone: UTC",
         }
 
         valid_df = pd.DataFrame(
@@ -337,6 +360,10 @@ class TestUploadPredictionEndpoints:
         assert body["success"] is True
         assert body["last_price"] == pytest.approx(84.12)
         assert len(body["forecasts"]) == 1
+        assert body["is_market_open"] is False
+        assert body["market_open_time"] == "02:00 UTC"
+        assert body["market_close_time"] == "22:00 UTC"
+        assert body["timezone_info"] == "Exchange timezone: UTC"
 
     def test_upload_predict_missing_columns(self, test_client):
         """Upload should fail when required date/price columns are missing."""

@@ -8,6 +8,10 @@ from datetime import datetime
 
 
 DATE_FMT_DESC = "Date in YYYY-MM-DD format"
+IS_MARKET_OPEN_DESC = "Whether the oil market is currently open"
+MARKET_OPEN_TIME_DESC = "Market open time (via Yahoo Finance market status)"
+MARKET_CLOSE_TIME_DESC = "Market close time (via Yahoo Finance market status)"
+TIMEZONE_INFO_DESC = "Timezone reference for market hours"
 
 
 class PriceInput(BaseModel):
@@ -51,10 +55,10 @@ class PredictionResponse(BaseModel):
     last_price_date: str = Field(..., description="Date of last known price")
     last_price: float = Field(..., description="Last known price (USD)")
     forecasts: List[ForecastDay] = Field(..., description="14-day price forecasts")
-    is_market_open: bool = Field(..., description="Whether the oil market is currently open")
-    market_open_time: str = Field(..., description="Market open time (02:00 UTC for Brent Oil)")
-    market_close_time: str = Field(..., description="Market close time (22:00 UTC for Brent Oil)")
-    timezone_info: str = Field(..., description="Timezone reference for market hours")
+    is_market_open: bool = Field(..., description=IS_MARKET_OPEN_DESC)
+    market_open_time: str = Field(..., description=MARKET_OPEN_TIME_DESC)
+    market_close_time: str = Field(..., description=MARKET_CLOSE_TIME_DESC)
+    timezone_info: str = Field(..., description=TIMEZONE_INFO_DESC)
 
 
 class UploadWindowStats(BaseModel):
@@ -84,6 +88,10 @@ class UploadPredictionResponse(BaseModel):
     last_price_date: str = Field(..., description="Date of last known price")
     last_price: float = Field(..., description="Last known price (USD)")
     forecasts: List[ForecastDay] = Field(..., description="14-day price forecasts")
+    is_market_open: bool = Field(..., description=IS_MARKET_OPEN_DESC)
+    market_open_time: str = Field(..., description=MARKET_OPEN_TIME_DESC)
+    market_close_time: str = Field(..., description=MARKET_CLOSE_TIME_DESC)
+    timezone_info: str = Field(..., description=TIMEZONE_INFO_DESC)
     upload_window: UploadWindowStats
     resolved_price_window: List[ResolvedPricePoint]
 
@@ -131,10 +139,10 @@ class HealthResponse(BaseModel):
     models_loaded: bool
     timestamp: str
     version: str
-    is_market_open: bool = Field(..., description="Whether the oil market is currently open")
-    market_open_time: str = Field(..., description="Market open time (02:00 UTC for Brent Oil)")
-    market_close_time: str = Field(..., description="Market close time (22:00 UTC for Brent Oil)")
-    timezone_info: str = Field(..., description="Timezone reference for market hours")
+    is_market_open: bool = Field(..., description=IS_MARKET_OPEN_DESC)
+    market_open_time: str = Field(..., description=MARKET_OPEN_TIME_DESC)
+    market_close_time: str = Field(..., description=MARKET_CLOSE_TIME_DESC)
+    timezone_info: str = Field(..., description=TIMEZONE_INFO_DESC)
 
 
 class ErrorResponse(BaseModel):

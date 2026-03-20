@@ -6,7 +6,7 @@ import yfinance as yf
 import pandas as pd
 import os
 from datetime import datetime, timedelta, UTC, time
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 import logging
 from threading import RLock
 from time import monotonic
@@ -23,6 +23,110 @@ _prices_cache_lock = RLock()
 _prices_cache: Dict[tuple[int, str], tuple[float, pd.DataFrame]] = {}
 _snapshot_cache_lock = RLock()
 _snapshot_cache: Optional[tuple[float, Dict[str, Any]]] = None
+
+
+def _get_chart_result(chart_payload: Dict[str, Any]) -> Dict[str, Any]:
+    chart = chart_payload.get("chart")
+    if not isinstance(chart, dict):
+        raise ValueError("Invalid payload: missing 'chart' object")
+
+    results = chart.get("result") or []
+    if not results:
+        error_obj = chart.get("error")
+        raise ValueError(f"Invalid payload: missing chart result. error={error_obj}")
+
+    return results[0] or {}
+
+
+def _extract_quote_series(result: Dict[str, Any]) -> Dict[str, list[Any]]:
+    quotes = (((result.get("indicators") or {}).get("quote") or [{}])[0]) or {}
+    return {
+        "timestamp": result.get("timestamp") or [],
+        "open": quotes.get("open") or [],
+        "high": quotes.get("high") or [],
+        "low": quotes.get("low") or [],
+        "close": quotes.get("close") or [],
+        "volume": quotes.get("volume") or [],
+    }
+
+
+def _validate_quote_series(series: Dict[str, list[Any]]) -> None:
+    if not series["timestamp"]:
+        raise ValueError("Invalid payload: 'timestamp' is empty")
+
+    lengths = {key: len(values) for key, values in series.items()}
+    if len(set(lengths.values())) != 1:
+        raise ValueError(f"Mismatched array lengths in chart payload: {lengths}")
+
+
+def _apply_missing_strategy(
+    df: pd.DataFrame,
+    numeric_cols: list[str],
+    missing_strategy: Literal["drop", "ffill", "none"],
+) -> pd.DataFrame:
+    if missing_strategy == "drop":
+        return df.dropna(subset=numeric_cols)
+    if missing_strategy == "ffill":
+        df[numeric_cols] = df[numeric_cols].ffill()
+        return df.dropna(subset=numeric_cols)
+    if missing_strategy == "none":
+        return df
+
+    raise ValueError("missing_strategy must be one of: 'drop', 'ffill', 'none'")
+
+
+def parse_yahoo_chart_intraday(
+    chart_payload: Dict[str, Any],
+    local_tz: Optional[str] = "Asia/Colombo",
+    missing_strategy: Literal["drop", "ffill", "none"] = "drop",
+) -> pd.DataFrame:
+    """
+    Parse Yahoo Finance chart endpoint JSON into a structured intraday DataFrame.
+
+    The Yahoo chart endpoint returns UNIX epoch timestamps in seconds. UNIX epoch is
+    defined relative to UTC, so we first parse into timezone-aware UTC datetimes for
+    consistent modeling and alignment with external UTC-aligned sources.
+
+    We keep UTC as the modeling index and optionally add a local-time view column for
+    dashboards/UI. Mixing local time directly into model pipelines can introduce DST and
+    timezone-shift bugs when joining multi-source financial data.
+
+    Args:
+        chart_payload: Parsed JSON payload from Yahoo chart endpoint.
+        local_tz: Optional local timezone for visualization column.
+        missing_strategy: Missing value handling for OHLCV columns:
+            - "drop": drop rows where any OHLCV value is missing.
+            - "ffill": forward-fill OHLCV values, then drop remaining NaNs.
+            - "none": keep missing values unchanged.
+
+    Returns:
+        DataFrame indexed by UTC datetime (`timestamp_utc`) with columns:
+            timestamp, open, high, low, close, volume, [timestamp_local]
+
+    Raises:
+        ValueError: If payload structure is invalid or required data is missing.
+    """
+    result = _get_chart_result(chart_payload)
+    series = _extract_quote_series(result)
+    _validate_quote_series(series)
+
+    df = pd.DataFrame(series)
+
+    # Parse UNIX epoch seconds as timezone-aware UTC timestamps.
+    df["timestamp_utc"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
+
+    numeric_cols = ["open", "high", "low", "close", "volume"]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = _apply_missing_strategy(df, numeric_cols, missing_strategy)
+
+    if local_tz:
+        # Local timezone should be presentation-only, not the canonical modeling timeline.
+        df["timestamp_local"] = df["timestamp_utc"].dt.tz_convert(local_tz)
+
+    df = df.set_index("timestamp_utc").sort_index()
+    return df
 
 
 def _cache_enabled() -> bool:

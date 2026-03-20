@@ -158,6 +158,103 @@ class TestPredictionService:
 class TestPriceFetcher:
     """Tests for price fetching service."""
 
+    def test_parse_yahoo_chart_intraday_builds_utc_index_and_local_column(self):
+        """Parser should build UTC index and optional local timezone column."""
+        from app.services.price_fetcher import parse_yahoo_chart_intraday
+
+        payload = {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {"symbol": "BZ=F", "timezone": "UTC"},
+                        "timestamp": [1710000000, 1710000060],
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [80.1, 80.2],
+                                    "high": [80.3, 80.4],
+                                    "low": [80.0, 80.1],
+                                    "close": [80.2, 80.3],
+                                    "volume": [100, 120],
+                                }
+                            ]
+                        },
+                    }
+                ],
+                "error": None,
+            }
+        }
+
+        df = parse_yahoo_chart_intraday(
+            payload,
+            local_tz="Asia/Colombo",
+            missing_strategy="drop",
+        )
+
+        assert isinstance(df.index, pd.DatetimeIndex)
+        assert str(df.index.tz) == "UTC"
+        assert "timestamp_local" in df.columns
+        assert str(df["timestamp_local"].dt.tz) == "Asia/Colombo"
+        assert {"timestamp", "open", "high", "low", "close", "volume"}.issubset(df.columns)
+        assert len(df) == 2
+
+    def test_parse_yahoo_chart_intraday_missing_strategy_drop(self):
+        """Drop strategy should remove rows with null OHLCV values."""
+        from app.services.price_fetcher import parse_yahoo_chart_intraday
+
+        payload = {
+            "chart": {
+                "result": [
+                    {
+                        "timestamp": [1710000000, 1710000060],
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [80.1, None],
+                                    "high": [80.3, 80.4],
+                                    "low": [80.0, 80.1],
+                                    "close": [80.2, 80.3],
+                                    "volume": [100, 120],
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+
+        df = parse_yahoo_chart_intraday(payload, local_tz=None, missing_strategy="drop")
+        assert len(df) == 1
+
+    def test_parse_yahoo_chart_intraday_missing_strategy_ffill(self):
+        """Forward-fill strategy should preserve later rows when possible."""
+        from app.services.price_fetcher import parse_yahoo_chart_intraday
+
+        payload = {
+            "chart": {
+                "result": [
+                    {
+                        "timestamp": [1710000000, 1710000060],
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [80.1, None],
+                                    "high": [80.3, 80.4],
+                                    "low": [80.0, 80.1],
+                                    "close": [80.2, 80.3],
+                                    "volume": [100, 120],
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+
+        df = parse_yahoo_chart_intraday(payload, local_tz=None, missing_strategy="ffill")
+        assert len(df) == 2
+        assert float(df.iloc[1]["open"]) == pytest.approx(80.1)
+
     def test_get_market_status_open_during_trading_hours(self):
         """Market should reflect Yahoo Finance marketState (REGULAR = open)."""
         from app.services.price_fetcher import get_market_status

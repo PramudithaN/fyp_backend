@@ -846,6 +846,7 @@ async def predict_from_uploaded_excel(
             file_bytes,
             file.filename,
         )
+        market = await run_in_threadpool(get_market_status)
 
         return UploadPredictionResponse(
             success=True,
@@ -853,6 +854,10 @@ async def predict_from_uploaded_excel(
             last_price_date=payload["last_price_date"],
             last_price=payload["last_price"],
             forecasts=payload["forecasts"],
+            is_market_open=market["is_open"],
+            market_open_time=market["market_open_time"],
+            market_close_time=market["market_close_time"],
+            timezone_info=market["timezone_info"],
             upload_window=payload["upload_window"],
             resolved_price_window=payload["resolved_price_window"],
         )
