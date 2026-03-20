@@ -108,6 +108,34 @@ _prediction_refresh_lock = asyncio.Lock()
 _prediction_background_refresh_task: asyncio.Task | None = None
 
 
+def _next_business_day(date_value: pd.Timestamp) -> pd.Timestamp:
+    """Advance to the next weekday, skipping weekends."""
+    next_date = pd.to_datetime(date_value) + pd.Timedelta(days=1)
+    while next_date.weekday() >= 5:
+        next_date += pd.Timedelta(days=1)
+    return next_date
+
+
+def _align_forecast_dates_to_last_price(
+    forecasts: list[dict],
+    last_price_date: str,
+) -> list[dict]:
+    """Ensure forecast dates start strictly after the exposed last known price date."""
+    current_date = pd.to_datetime(last_price_date)
+    aligned_forecasts: list[dict] = []
+
+    for forecast in forecasts:
+        current_date = _next_business_day(current_date)
+        aligned_forecasts.append(
+            {
+                **forecast,
+                "date": current_date.strftime("%Y-%m-%d"),
+            }
+        )
+
+    return aligned_forecasts
+
+
 def _ensure_prediction_background_refresh(persist_forecast: bool) -> None:
     """Kick off one cache refresh task if no refresh is currently running."""
     global _prediction_background_refresh_task
@@ -157,6 +185,8 @@ async def _build_prediction_response(persist_forecast: bool = True) -> Predictio
     else:
         last_price = close_price
         last_date = close_date
+
+    forecasts = _align_forecast_dates_to_last_price(forecasts, last_date)
 
     if persist_forecast:
         try:

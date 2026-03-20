@@ -215,6 +215,52 @@ class TestPredictEndpoint:
         response = test_client.get("/predict")
         assert response.status_code == 500
 
+    @patch("app.main.fetch_live_price_snapshot")
+    @patch("app.main.prediction_service.predict")
+    @patch("app.main._sync_latest_prices")
+    def test_predict_aligns_forecast_dates_with_live_snapshot(
+        self,
+        mock_sync_prices,
+        mock_predict,
+        mock_live_snapshot,
+        test_client,
+    ):
+        """Forecast dates should start after the last_price_date exposed by the API."""
+        mock_sync_prices.return_value = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-03-19", "2026-03-20"]),
+                "price": [84.0, 85.0],
+            }
+        )
+        mock_live_snapshot.return_value = {
+            "price": 86.0,
+            "as_of": "2026-03-21T10:15:00",
+            "as_of_date": "2026-03-21",
+            "source": "yahoo_finance_intraday",
+        }
+        mock_predict.return_value = [
+            {
+                "date": "2026-03-21",
+                "forecasted_price": 87.0,
+                "forecasted_return": 0.01,
+                "horizon": 1,
+            },
+            {
+                "date": "2026-03-24",
+                "forecasted_price": 88.0,
+                "forecasted_return": 0.01,
+                "horizon": 2,
+            },
+        ]
+
+        response = test_client.get("/predict")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["last_price_date"] == "2026-03-21"
+        assert body["forecasts"][0]["date"] == "2026-03-23"
+        assert body["forecasts"][1]["date"] == "2026-03-24"
+
 
 class TestUploadPredictionEndpoints:
     """Tests for upload-based prediction endpoints."""
