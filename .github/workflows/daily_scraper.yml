@@ -19,29 +19,29 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Build request URL
-        id: url
-        run: |
-          BASE="${{ secrets.BACKEND_API_URL }}"
-          DATE="${{ github.event.inputs.target_date }}"
-          if [ -n "$DATE" ]; then
-            echo "endpoint=${BASE}/scraper/run?target_date=${DATE}" >> "$GITHUB_OUTPUT"
-          else
-            echo "endpoint=${BASE}/scraper/run" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Call /scraper/run
         id: scrape
+        env:
+          BACKEND_API_URL: ${{ secrets.BACKEND_API_URL }}
+          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
+          TARGET_DATE: ${{ github.event.inputs.target_date }}
         run: |
+          BASE="$BACKEND_API_URL"
+          DATE="$TARGET_DATE"
+          if [ -n "$DATE" ]; then
+            ENDPOINT="${BASE}/scraper/run?target_date=${DATE}"
+          else
+            ENDPOINT="${BASE}/scraper/run"
+          fi
+
           RESPONSE=$(curl --silent --show-error --fail \
             --max-time 600 \
-            -X POST "${{ steps.url.outputs.endpoint }}" \
-            -H "X-Scraper-Key: ${{ secrets.SCRAPER_API_KEY }}" \
+            -X POST "$ENDPOINT" \
+            -H "X-Scraper-Key: $SCRAPER_API_KEY" \
             -H "Content-Type: application/json")
           echo "response=$RESPONSE"
           STATUS=$(echo "$RESPONSE" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('status','unknown'))")
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
-          echo "response=$RESPONSE" >> "$GITHUB_OUTPUT"
 
       - name: Report result
         run: |

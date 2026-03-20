@@ -223,26 +223,16 @@ async def _refresh_prediction_cache(
     """Return warm prediction data and serialize expensive refresh work."""
     global _predict_cache
 
-    if _cache_enabled() and not force_refresh:
-        with _predict_cache_lock:
-            if _predict_cache:
-                cache_age_seconds = monotonic() - _predict_cache[0]
-                if cache_age_seconds < _PREDICT_CACHE_TTL_SECONDS:
-                    return _predict_cache[1]
-                if cache_age_seconds < _PREDICT_CACHE_MAX_STALE_SECONDS:
-                    _ensure_prediction_background_refresh(persist_forecast=persist_forecast)
-                    return _predict_cache[1]
+    if not force_refresh:
+        cached_response = _get_cached_prediction(persist_forecast=persist_forecast)
+        if cached_response is not None:
+            return cached_response
 
     async with _prediction_refresh_lock:
-        if _cache_enabled() and not force_refresh:
-            with _predict_cache_lock:
-                if _predict_cache:
-                    cache_age_seconds = monotonic() - _predict_cache[0]
-                    if cache_age_seconds < _PREDICT_CACHE_TTL_SECONDS:
-                        return _predict_cache[1]
-                    if cache_age_seconds < _PREDICT_CACHE_MAX_STALE_SECONDS:
-                        _ensure_prediction_background_refresh(persist_forecast=persist_forecast)
-                        return _predict_cache[1]
+        if not force_refresh:
+            cached_response = _get_cached_prediction(persist_forecast=persist_forecast)
+            if cached_response is not None:
+                return cached_response
 
         response = await _build_prediction_response(persist_forecast=persist_forecast)
 
@@ -251,6 +241,26 @@ async def _refresh_prediction_cache(
                 _predict_cache = (monotonic(), response)
 
         return response
+
+
+def _get_cached_prediction(*, persist_forecast: bool) -> PredictionResponse | None:
+    """Return valid/stale cache entry when available and trigger background refresh if needed."""
+    if not _cache_enabled():
+        return None
+
+    with _predict_cache_lock:
+        if not _predict_cache:
+            return None
+
+        cache_age_seconds = monotonic() - _predict_cache[0]
+        if cache_age_seconds < _PREDICT_CACHE_TTL_SECONDS:
+            return _predict_cache[1]
+
+        if cache_age_seconds < _PREDICT_CACHE_MAX_STALE_SECONDS:
+            _ensure_prediction_background_refresh(persist_forecast=persist_forecast)
+            return _predict_cache[1]
+
+    return None
 
 
 async def _prediction_precompute_loop(stop_event: asyncio.Event):
@@ -811,7 +821,10 @@ async def get_upload_excel_template():
     },
 )
 async def predict_from_uploaded_excel(
-    file: UploadFile = File(..., description="Excel file containing date/price rows"),
+    file: Annotated[
+        UploadFile,
+        File(..., description="Excel file containing date/price rows"),
+    ],
 ):
     """
     Run prediction using an uploaded Excel lookback window without storing upload rows.

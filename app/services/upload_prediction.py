@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import numpy as np
@@ -28,7 +28,7 @@ _PRICE_COL_CANDIDATES = (
 def build_upload_excel_template_bytes(lookback_days: int) -> bytes:
     """Build a strict Excel template with required columns for upload."""
     days = max(int(lookback_days), 1)
-    end_date = datetime.utcnow().date()
+    end_date = datetime.now(timezone.utc).date()
     start_date = end_date - timedelta(days=days - 1)
 
     rows = []

@@ -401,9 +401,9 @@ class ExplainabilityService:
                 return {"top_timesteps": [], "method": "insufficient_data"}
 
             # prepare_mid_features returns numpy shape (1, lookback, n_features)
-            X_input = prepare_mid_features(feat_df, lookback=LOOKBACK)
-            # Convert to tensor — X_input already has shape (1, LOOKBACK, n_features)
-            X_tensor = torch.tensor(X_input, dtype=torch.float32, device=self.artifacts.device)
+            x_input = prepare_mid_features(feat_df, lookback=LOOKBACK)
+            # Convert to tensor — x_input already has shape (1, LOOKBACK, n_features)
+            x_tensor = torch.tensor(x_input, dtype=torch.float32, device=self.artifacts.device)
 
             # Run TimeSHAP (expensive - use local_report with limited samples)
             # Note: TimeSHAP may not be fully compatible with all GRU architectures
@@ -411,7 +411,7 @@ class ExplainabilityService:
             try:
                 report = local_report(
                     self.artifacts.mid_gru,
-                    X_tensor,
+                    x_tensor,
                     timestep=True,
                     num_samples=10,
                 )
@@ -474,9 +474,9 @@ class ExplainabilityService:
                 return {"top_features": [], "method": "insufficient_data"}
 
             # prepare_hf_features returns numpy shape (1, n_features)
-            X_today = prepare_hf_features(feat_df)  # shape: (1, n_features)
+            x_today = prepare_hf_features(feat_df)  # shape: (1, n_features)
 
-            if X_today is None or X_today.shape[0] == 0:
+            if x_today is None or x_today.shape[0] == 0:
                 logger.warning("XGBoost features empty after preparation")
                 return {"top_features": [], "method": "insufficient_data"}
 
@@ -491,7 +491,7 @@ class ExplainabilityService:
 
             # Compute SHAP values
             explainer = shap.TreeExplainer(xgb_model)
-            shap_values = explainer.shap_values(X_today)
+            shap_values = explainer.shap_values(x_today)
 
             # Handle numpy or list output
             if isinstance(shap_values, list):
@@ -508,7 +508,7 @@ class ExplainabilityService:
                         {
                             "feature_name": feature_name,
                             "shap_value": float(shap_values[idx]),
-                            "feature_value": float(X_today[0, idx]),
+                            "feature_value": float(x_today[0, idx]),
                         }
                     )
 
