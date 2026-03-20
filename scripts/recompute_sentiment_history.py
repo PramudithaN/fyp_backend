@@ -282,7 +282,7 @@ def _insert_sentiment_records(
     count = 0
     
     for rec in sentiment_records:
-        res = _execute(
+        _execute(
             conn,
             """
             INSERT INTO sentiment_history
@@ -386,7 +386,7 @@ def main() -> int:
         
         return 0
 
-    except Exception as e:
+    except Exception:
         logger.error("Recomputation failed", exc_info=True)
         return 1
     
