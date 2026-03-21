@@ -117,6 +117,11 @@ _predict_cache: tuple[float, PredictionResponse] | None = None
 _prediction_refresh_lock = asyncio.Lock()
 _prediction_background_refresh_task: asyncio.Task | None = None
 
+# Market status caching (reduces Yahoo Finance API calls)
+_MARKET_STATUS_CACHE_TTL_SECONDS = 60.0  # Cache for 60 seconds
+_market_status_cache_lock = RLock()
+_market_status_cache: tuple[float, dict] | None = None
+
 
 def _next_business_day(date_value: pd.Timestamp) -> pd.Timestamp:
     """Advance to the next weekday, skipping weekends."""
@@ -210,7 +215,11 @@ async def _build_prediction_response(persist_forecast: bool = True) -> Predictio
         except Exception as db_err:
             logger.warning(f"Failed to persist prediction: {db_err}")
 
-    market = await run_in_threadpool(get_market_status)
+    # Try cached market status first to avoid hitting Yahoo Finance API repeatedly
+    market = _get_cached_market_status()
+    if market is None:
+        market = await run_in_threadpool(get_market_status)
+        _cache_market_status(market)
 
     return PredictionResponse(
         success=True,
@@ -271,6 +280,32 @@ def _get_cached_prediction(*, persist_forecast: bool) -> PredictionResponse | No
             return _predict_cache[1]
 
     return None
+
+
+def _get_cached_market_status() -> dict | None:
+    """Return cached market status if available and fresh (within TTL)."""
+    if not _cache_enabled():
+        return None
+
+    with _market_status_cache_lock:
+        if not _market_status_cache:
+            return None
+
+        cache_age_seconds = monotonic() - _market_status_cache[0]
+        if cache_age_seconds < _MARKET_STATUS_CACHE_TTL_SECONDS:
+            return _market_status_cache[1]
+
+    return None
+
+
+def _cache_market_status(market_status: dict) -> None:
+    """Store market status in cache with current timestamp."""
+    if not _cache_enabled():
+        return
+
+    with _market_status_cache_lock:
+        global _market_status_cache
+        _market_status_cache = (monotonic(), market_status)
 
 
 async def _prediction_precompute_loop(stop_event: asyncio.Event):
@@ -561,7 +596,12 @@ async def root():
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint with market status."""
-    market = await run_in_threadpool(get_market_status)
+    # Try cached market status first to avoid hitting Yahoo Finance API repeatedly
+    market = _get_cached_market_status()
+    if market is None:
+        market = await run_in_threadpool(get_market_status)
+        _cache_market_status(market)
+    
     return HealthResponse(
         status="healthy",
         models_loaded=model_artifacts._loaded,
@@ -835,7 +875,12 @@ async def predict_now():
     2. If missing, fallback to latest available locked record.
     """
     try:
-        market = await run_in_threadpool(get_market_status)
+        # Try cached market status first to avoid hitting Yahoo Finance API on every request
+        market = _get_cached_market_status()
+        if market is None:
+            market = await run_in_threadpool(get_market_status)
+            _cache_market_status(market)
+        
         today_key = _current_prediction_date_local()
 
         todays_record = None
@@ -959,7 +1004,12 @@ async def predict_from_uploaded_excel(
             file_bytes,
             file.filename,
         )
-        market = await run_in_threadpool(get_market_status)
+        
+        # Try cached market status first to avoid hitting Yahoo Finance API repeatedly
+        market = _get_cached_market_status()
+        if market is None:
+            market = await run_in_threadpool(get_market_status)
+            _cache_market_status(market)
 
         return UploadPredictionResponse(
             success=True,
