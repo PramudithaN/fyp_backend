@@ -706,73 +706,78 @@ def _lookup_limit_reached(
     )
 
 
-def _stable_page_for_title(title: str, max_page: int = 5) -> int:
-    """Pick a deterministic Pexels page for a title to diversify repeated queries."""
-    if max_page <= 1:
-        return 1
+def _stable_photo_index_for_title(title: str, n_photos: int) -> int:
+    """Return a stable 0-based index into a photo batch, derived from the title hash.
 
+    Different titles produce different indices so that articles sharing the same
+    Pexels query still receive visually distinct images.
+    """
+    if n_photos <= 1:
+        return 0
     seed = (title or "").strip().lower()
     if not seed:
-        return 1
-
+        return 0
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
-    return (int(digest[:8], 16) % max_page) + 1
-
-
-def _build_image_cache_key(query: str, orientation: str, page: int) -> str:
-    """Cache key includes query + orientation + page to avoid one-image-for-all behavior."""
-    return f"{query.strip().lower()}|{orientation}|p{max(1, int(page))}"
+    return int(digest[:8], 16) % n_photos
 
 
 def _resolve_image_url_from_headline(
     title: str,
-    cache: Optional[Dict[str, str]] = None,
+    cache: Optional[Dict[str, Any]] = None,
     max_new_lookups: Optional[int] = None,
     lookup_counter: Optional[Dict[str, int]] = None,
 ) -> str:
-    """Resolve an image URL by trying multiple keyword queries for one headline."""
+    """Resolve an image URL by trying multiple keyword queries for one headline.
+
+    A batch of up to PEXELS_PER_PAGE photos is fetched per (query, orientation)
+    pair and cached as a list.  Each article title selects a different photo from
+    the batch via a stable hash index, so articles with the same Pexels query
+    still get visually distinct images.
+    """
     queries = _build_fallback_image_queries(title)
     orientation = _infer_orientation((title or "").lower())
-    page = _stable_page_for_title(title)
+    # Stable 0-based index within the fetched photo batch — varies per title.
+    photo_index = _stable_photo_index_for_title(title, max(1, PEXELS_PER_PAGE))
 
     for query in queries:
-        cache_key = _build_image_cache_key(query, orientation, page)
-        cached_image_url = _get_cached_image_query_result(cache_key, cache)
-        if cached_image_url is not None:
-            if cached_image_url:
-                return cached_image_url
-            continue
+        cache_key = f"{query.strip().lower()}|{orientation}"
+
+        cached = cache.get(cache_key) if cache is not None else None
+        if cached is not None:
+            # Cache stores a list of URLs fetched for this (query, orientation).
+            if isinstance(cached, list) and cached:
+                return cached[photo_index % len(cached)]
+            continue  # empty list means query returned no results; try next
 
         if _lookup_limit_reached(max_new_lookups, lookup_counter):
             break
 
-        image_url = _fetch_pexels_image_url(
-            query,
-            orientation=orientation,
-            page=page,
-        )
+        photo_list = _fetch_pexels_image_list(query, orientation=orientation)
 
         if lookup_counter is not None:
             lookup_counter["count"] = lookup_counter.get("count", 0) + 1
 
         if cache is not None:
-            cache[cache_key] = image_url
+            cache[cache_key] = photo_list
 
-        if image_url:
-            return image_url
+        if photo_list:
+            return photo_list[photo_index % len(photo_list)]
 
     return ""
 
 
-def _fetch_pexels_image_url(
+def _fetch_pexels_image_list(
     query: str,
     orientation: str = "landscape",
-    page: int = 1,
-) -> str:
-    """Fetch a relevant free-stock image URL from Pexels."""
+) -> List[str]:
+    """Fetch a batch of image URLs from Pexels for the given query.
+
+    Returns up to PEXELS_PER_PAGE URLs so callers can select different photos
+    for different articles without making additional API calls.
+    """
     if not PEXELS_API_KEY:
         logger.debug("PEXELS_API_KEY not set — skipping image lookup for query: %s", query)
-        return ""
+        return []
 
     import requests
 
@@ -780,7 +785,7 @@ def _fetch_pexels_image_url(
     params = {
         "query": query,
         "per_page": max(1, PEXELS_PER_PAGE),
-        "page": max(1, int(page)),
+        "page": 1,
         "orientation": orientation,
         "size": "medium",
     }
@@ -794,17 +799,28 @@ def _fetch_pexels_image_url(
         )
         response.raise_for_status()
         photos = response.json().get("photos", [])
-        if not photos:
-            return ""
-
-        src = photos[0].get("src", {})
-        # Prefer medium-sized image for card usage.
-        return _normalize_image_url(
-            src.get("medium") or src.get("large") or src.get("original") or ""
-        )
+        urls: List[str] = []
+        for photo in photos:
+            src = photo.get("src", {})
+            url = _normalize_image_url(
+                src.get("medium") or src.get("large") or src.get("original") or ""
+            )
+            if url:
+                urls.append(url)
+        return urls
     except Exception as e:
         logger.debug(f"Pexels lookup failed for query '{query}': {e}")
-        return ""
+        return []
+
+
+def _fetch_pexels_image_url(
+    query: str,
+    orientation: str = "landscape",
+    page: int = 1,
+) -> str:
+    """Fetch a single Pexels image URL (kept for backwards compatibility)."""
+    photos = _fetch_pexels_image_list(query, orientation=orientation)
+    return photos[0] if photos else ""
 
 
 def fetch_oil_news(

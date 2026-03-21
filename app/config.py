@@ -55,7 +55,7 @@ NEWSDATA_KEY = os.getenv("NEWSDATA_KEY", "")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 
 # Pexels fallback image settings
-PEXELS_PER_PAGE = int(os.getenv("PEXELS_PER_PAGE", "1"))
+PEXELS_PER_PAGE = int(os.getenv("PEXELS_PER_PAGE", "15"))
 PEXELS_TIMEOUT_SECONDS = int(os.getenv("PEXELS_TIMEOUT_SECONDS", "10"))
 
 # Hugging Face API configuration (for Mistral keyword extraction)

@@ -561,9 +561,9 @@ class TestNewsFetcher:
         early_queries = queries[:5]
         assert any("disruptions" in query for query in early_queries)
 
-    def test_stable_page_for_title_is_deterministic_and_varies(self):
-        """Different titles should map to deterministic (often different) pages for visual diversity."""
-        from app.services.news_fetcher import _stable_page_for_title
+    def test_stable_photo_index_is_deterministic_and_varies(self):
+        """Different titles must produce stable, varied photo indices for visual diversity."""
+        from app.services.news_fetcher import _stable_photo_index_for_title
 
         titles = [
             "OPEC signals production cut amid market volatility",
@@ -574,24 +574,25 @@ class TestNewsFetcher:
             "Iran export sanctions tighten global oil supply outlook",
         ]
 
-        page_first = _stable_page_for_title(titles[0])
-        page_repeat = _stable_page_for_title(titles[0])
-        pages = [_stable_page_for_title(title) for title in titles]
+        idx_first = _stable_photo_index_for_title(titles[0], 15)
+        idx_repeat = _stable_photo_index_for_title(titles[0], 15)
+        indices = [_stable_photo_index_for_title(t, 15) for t in titles]
 
-        assert page_first == page_repeat
-        assert all(1 <= page <= 5 for page in pages)
-        assert len(set(pages)) > 1
+        assert idx_first == idx_repeat, "Index must be deterministic for the same title"
+        assert all(0 <= i < 15 for i in indices), "Indices must be within [0, n_photos)"
+        assert len(set(indices)) > 1, "Different titles should produce different indices"
 
-    def test_image_cache_key_includes_page(self):
-        """Cache keys should differ when page differs to avoid one cached image across all titles."""
-        from app.services.news_fetcher import _build_image_cache_key
+    def test_different_titles_use_different_photo_indices(self):
+        """Articles sharing the same Pexels query must pick different photos via index."""
+        from app.services.news_fetcher import _stable_photo_index_for_title
 
-        key_page_1 = _build_image_cache_key("oil refinery", "landscape", 1)
-        key_page_2 = _build_image_cache_key("oil refinery", "landscape", 2)
+        title_a = "US loans 45.2 million barrels of strategic reserve oil in first batch since Iran war"
+        title_b = "Iraq cuts Basra oil output to 900,000 bpd from 3.3 million bpd after southern exports halt"
 
-        assert key_page_1 != key_page_2
-        assert key_page_1.endswith("|p1")
-        assert key_page_2.endswith("|p2")
+        idx_a = _stable_photo_index_for_title(title_a, 15)
+        idx_b = _stable_photo_index_for_title(title_b, 15)
+
+        assert idx_a != idx_b, "Distinct headlines must not collide on the same photo index"
 
 
 class TestFinBERTAnalyzer:

@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import Dict
+from typing import Any, Dict
 
 from app.database import (
     clear_news_article_image_urls,
@@ -54,7 +54,7 @@ def backfill_news_image_urls(
             "errors": 0,
         }
 
-    pexels_cache: Dict[str, str] = {}
+    pexels_cache: Dict[str, Any] = {}
     updated = 0
     no_result = 0
     errors = 0
