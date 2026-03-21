@@ -399,7 +399,9 @@ def prepare_mid_features(df: pd.DataFrame, lookback: int = 30) -> np.ndarray:
     Returns:
         numpy array of shape (1, lookback, n_features)
     """
-    feature_cols = get_mid_freq_features()
+    from app.models.model_loader import model_artifacts
+
+    feature_cols = model_artifacts.mid_features or get_mid_freq_features()
 
     # Get last 'lookback' rows
     data = df[feature_cols].tail(lookback)
@@ -426,8 +428,10 @@ def prepare_sentiment_features(
         Tuple of (price_features, sentiment_features) arrays
         Each of shape (1, lookback, n_features)
     """
-    price_cols = get_price_features()
-    sent_cols = get_sentiment_features()
+    from app.models.model_loader import model_artifacts
+
+    price_cols = model_artifacts.price_features or get_price_features()
+    sent_cols = model_artifacts.sentiment_features or get_sentiment_features()
 
     # Get last 'lookback' rows
     price_data = df[price_cols].tail(lookback).fillna(0).values
@@ -447,7 +451,9 @@ def prepare_hf_features(df: pd.DataFrame) -> np.ndarray:
     Returns:
         numpy array of shape (1, n_features)
     """
-    feature_cols = get_hf_features()
+    from app.models.model_loader import model_artifacts
+
+    feature_cols = model_artifacts.hf_features or get_hf_features()
 
     # Get only the last row
     data = df[feature_cols].tail(1).fillna(0).values

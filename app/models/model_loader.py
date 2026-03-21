@@ -2,6 +2,7 @@
 Model artifact loader - loads all trained models at startup.
 """
 
+import json
 import numpy as np
 import torch
 import joblib
@@ -23,12 +24,15 @@ class ModelArtifacts:
 
     def __init__(self):
         self.config: Dict[str, Any] = {}
+        self.artifacts_dir = MODEL_ARTIFACTS_DIR
+        self._is_h5_bundle = False
         self.scaler_mid = None
         self.scaler_price = None
         self.scaler_sent = None
         self.meta_models: Dict[int, Any] = {}
         self.meta_scalers: Dict[int, Any] = {}
         self.xgb_hf_models: Dict[int, Any] = {}
+        self.arima_model = None
         self.mid_gru: Optional[MidFreqGRU] = None
         self.sent_gru: Optional[SentimentGRU] = None
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -40,7 +44,9 @@ class ModelArtifacts:
             logger.info("Models already loaded, skipping...")
             return
 
-        logger.info(f"Loading model artifacts from {MODEL_ARTIFACTS_DIR}")
+        self.artifacts_dir, self._is_h5_bundle = self._resolve_artifact_layout()
+        logger.info(f"Loading model artifacts from {self.artifacts_dir}")
+        logger.info(f"Artifact profile: {'h5' if self._is_h5_bundle else 'legacy'}")
         logger.info(f"Using device: {self.device}")
 
         # Load configuration
@@ -55,27 +61,49 @@ class ModelArtifacts:
         # Load XGBoost HF models
         self._load_xgb_models()
 
+        # Load ARIMA artifact/order
+        self._load_arima_artifacts()
+
         # Load PyTorch GRU models
         self._load_gru_models()
 
         self._loaded = True
         logger.info("All model artifacts loaded successfully!")
 
+    def _resolve_artifact_layout(self) -> tuple[Path, bool]:
+        """Resolve whether we are loading new H5 bundle artifacts or legacy files."""
+        h5_config = MODEL_ARTIFACTS_DIR / "model_config_h5.json"
+        if h5_config.exists():
+            return MODEL_ARTIFACTS_DIR, True
+        return MODEL_ARTIFACTS_DIR, False
+
     def _load_config(self) -> None:
-        """Load configuration from config.pkl"""
-        config_path = MODEL_ARTIFACTS_DIR / "config.pkl"
-        self.config = joblib.load(config_path)
+        """Load configuration from H5 JSON or legacy pickle config."""
+        if self._is_h5_bundle:
+            config_path = self.artifacts_dir / "model_config_h5.json"
+            with open(config_path, "r", encoding="utf-8") as f:
+                self.config = json.load(f)
+        else:
+            config_path = self.artifacts_dir / "config.pkl"
+            self.config = joblib.load(config_path)
+
         logger.info(
-            f"Config loaded: LOOKBACK={self.config.get('LOOKBACK')}, "
-            f"HORIZON={self.config.get('HORIZON')}, "
-            f"ARIMA_ORDER={self.config.get('ARIMA_ORDER')}"
+            "Config loaded: LOOKBACK=%s, HORIZON=%s, ARIMA_ORDER=%s",
+            self.lookback,
+            self.horizon,
+            self.arima_order,
         )
 
     def _load_scalers(self) -> None:
         """Load all sklearn scalers."""
-        self.scaler_mid = joblib.load(MODEL_ARTIFACTS_DIR / "scaler_mid.pkl")
-        self.scaler_price = joblib.load(MODEL_ARTIFACTS_DIR / "scaler_price.pkl")
-        self.scaler_sent = joblib.load(MODEL_ARTIFACTS_DIR / "scaler_sent.pkl")
+        if self._is_h5_bundle:
+            self.scaler_mid = joblib.load(self.artifacts_dir / "scaler_mid_h5.pkl")
+            self.scaler_price = joblib.load(self.artifacts_dir / "scaler_price_h5.pkl")
+            self.scaler_sent = joblib.load(self.artifacts_dir / "scaler_sent_h5.pkl")
+        else:
+            self.scaler_mid = joblib.load(self.artifacts_dir / "scaler_mid.pkl")
+            self.scaler_price = joblib.load(self.artifacts_dir / "scaler_price.pkl")
+            self.scaler_sent = joblib.load(self.artifacts_dir / "scaler_sent.pkl")
 
         # Check for scaler_mid mismatch (known issue from training notebook)
         # The mid-GRU expects 14 features, but scaler_mid may have been saved with fewer
@@ -87,29 +115,63 @@ class ModelArtifacts:
 
     def _load_meta_models(self) -> None:
         """Load Ridge meta-ensemble models and their scalers."""
-        self.meta_models = joblib.load(MODEL_ARTIFACTS_DIR / "meta_models.pkl")
-        self.meta_scalers = joblib.load(MODEL_ARTIFACTS_DIR / "meta_scalers.pkl")
+        if self._is_h5_bundle:
+            self.meta_models = joblib.load(self.artifacts_dir / "meta_models_h5.pkl")
+            self.meta_scalers = joblib.load(self.artifacts_dir / "meta_scalers_h5.pkl")
+        else:
+            self.meta_models = joblib.load(self.artifacts_dir / "meta_models.pkl")
+            self.meta_scalers = joblib.load(self.artifacts_dir / "meta_scalers.pkl")
         logger.info(f"Meta models loaded for horizons: {list(self.meta_models.keys())}")
 
     def _load_xgb_models(self) -> None:
         """Load XGBoost high-frequency models."""
-        self.xgb_hf_models = joblib.load(MODEL_ARTIFACTS_DIR / "xgb_hf_models.pkl")
+        if self._is_h5_bundle:
+            self.xgb_hf_models = joblib.load(self.artifacts_dir / "xgb_models_h5.pkl")
+        else:
+            self.xgb_hf_models = joblib.load(self.artifacts_dir / "xgb_hf_models.pkl")
         logger.info(
             f"XGBoost HF models loaded for horizons: {list(self.xgb_hf_models.keys())}"
         )
+
+    def _load_arima_artifacts(self) -> None:
+        """Load saved ARIMA model (if available) and ARIMA order."""
+        self.arima_model = None
+
+        if self._is_h5_bundle:
+            arima_model_path = self.artifacts_dir / "arima_model_h5.pkl"
+            arima_order_path = self.artifacts_dir / "arima_order_h5.pkl"
+
+            if arima_model_path.exists():
+                self.arima_model = joblib.load(arima_model_path)
+                logger.info("ARIMA model loaded")
+
+            if arima_order_path.exists() and "arima_order" not in self.config:
+                order_data = joblib.load(arima_order_path)
+                best_order = order_data.get("best_order") if isinstance(order_data, dict) else None
+                if best_order is not None:
+                    self.config["arima_order"] = list(best_order)
+        else:
+            arima_model_path = self.artifacts_dir / "arima_model.pkl"
+            if arima_model_path.exists():
+                self.arima_model = joblib.load(arima_model_path)
+                logger.info("ARIMA model loaded")
 
     def _load_gru_models(self) -> None:
         """Load PyTorch GRU models."""
         from sklearn.preprocessing import StandardScaler
 
-        horizon = self.config.get("HORIZON", HORIZON)
+        horizon = self.horizon
 
         # Get feature dimensions from scalers
         n_price_features = self.scaler_price.n_features_in_
         n_sent_features = self.scaler_sent.n_features_in_
 
         # For mid-GRU, check the actual model weight dimensions
-        mid_gru_path = MODEL_ARTIFACTS_DIR / "mid_gru.pt"
+        mid_gru_path = (
+            self.artifacts_dir / "mid_gru_best_h5.pt"
+            if self._is_h5_bundle
+            else self.artifacts_dir / "mid_gru.pt"
+        )
         mid_state = torch.load(mid_gru_path, map_location="cpu", weights_only=True)
         n_mid_features = mid_state["gru.weight_ih_l0"].shape[1]
 
@@ -154,7 +216,11 @@ class ModelArtifacts:
             horizon=horizon,
         ).to(self.device)
 
-        sent_gru_path = MODEL_ARTIFACTS_DIR / "sent_gru.pt"
+        sent_gru_path = (
+            self.artifacts_dir / "sentiment_gru_best_h5.pt"
+            if self._is_h5_bundle
+            else self.artifacts_dir / "sent_gru.pt"
+        )
         self.sent_gru.load_state_dict(
             torch.load(sent_gru_path, map_location=self.device, weights_only=True)
         )
@@ -163,23 +229,34 @@ class ModelArtifacts:
 
     @property
     def lookback(self) -> int:
-        return self.config.get("LOOKBACK", 30)
+        return int(self.config.get("lookback", self.config.get("LOOKBACK", 30)))
 
     @property
     def horizon(self) -> int:
-        return self.config.get("HORIZON", 14)
+        return int(self.config.get("horizon", self.config.get("HORIZON", 14)))
 
     @property
     def arima_order(self) -> tuple:
-        return self.config.get("ARIMA_ORDER", (1, 0, 1))
+        value = self.config.get("arima_order", self.config.get("ARIMA_ORDER", (1, 0, 1)))
+        return tuple(value)
 
     @property
     def price_features(self) -> list:
-        return self.config.get("price_features", [])
+        return self.config.get("sent_price_cols", self.config.get("price_features", []))
 
     @property
     def sentiment_features(self) -> list:
-        return self.config.get("sentiment_features", [])
+        return self.config.get(
+            "sent_sent_cols", self.config.get("sentiment_features", [])
+        )
+
+    @property
+    def mid_features(self) -> list:
+        return self.config.get("mid_feat_cols", self.config.get("mid_features", []))
+
+    @property
+    def hf_features(self) -> list:
+        return self.config.get("hf_feat_cols", self.config.get("hf_features", []))
 
 
 # Global singleton instance

@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 from datetime import datetime
 
+from app.models.model_loader import model_artifacts
+
 
 DATE_FMT_DESC = "Date in YYYY-MM-DD format"
 IS_MARKET_OPEN_DESC = "Whether the oil market is currently open"
@@ -34,8 +36,18 @@ class PredictionRequest(BaseModel):
     """Request body for manual prediction endpoint."""
 
     prices: List[PriceInput] = Field(
-        ..., min_length=30, description="List of price data points (at least 30 days)"
+        ..., description="List of price data points covering at least the model lookback window"
     )
+
+    @field_validator("prices")
+    @classmethod
+    def validate_lookback_length(cls, prices):
+        required = int(model_artifacts.lookback)
+        if len(prices) < required:
+            raise ValueError(
+                f"At least {required} price data points are required for the active model"
+            )
+        return prices
 
 
 class ForecastDay(BaseModel):
@@ -44,7 +56,17 @@ class ForecastDay(BaseModel):
     date: str = Field(..., description="Forecast date")
     forecasted_price: float = Field(..., description="Predicted price (USD)")
     forecasted_return: float = Field(..., description="Predicted log return")
-    horizon: int = Field(..., ge=1, le=14, description="Days ahead (1-14)")
+    horizon: int = Field(..., ge=1, description="Forecast step index for the active model horizon")
+
+    @field_validator("horizon")
+    @classmethod
+    def validate_horizon(cls, horizon):
+        max_horizon = int(model_artifacts.horizon)
+        if horizon > max_horizon:
+            raise ValueError(
+                f"Horizon must be between 1 and {max_horizon} for the active model"
+            )
+        return horizon
 
 
 class PredictionResponse(BaseModel):
@@ -54,7 +76,7 @@ class PredictionResponse(BaseModel):
     data_source: str = Field(..., description="Source of price data")
     last_price_date: str = Field(..., description="Date of last known price")
     last_price: float = Field(..., description="Last known price (USD)")
-    forecasts: List[ForecastDay] = Field(..., description="14-day price forecasts")
+    forecasts: List[ForecastDay] = Field(..., description="Multi-step price forecasts for the active model horizon")
     is_market_open: bool = Field(..., description=IS_MARKET_OPEN_DESC)
     market_open_time: str = Field(..., description=MARKET_OPEN_TIME_DESC)
     market_close_time: str = Field(..., description=MARKET_CLOSE_TIME_DESC)
@@ -87,7 +109,7 @@ class UploadPredictionResponse(BaseModel):
     data_source: str = Field(..., description="Composed data source description")
     last_price_date: str = Field(..., description="Date of last known price")
     last_price: float = Field(..., description="Last known price (USD)")
-    forecasts: List[ForecastDay] = Field(..., description="14-day price forecasts")
+    forecasts: List[ForecastDay] = Field(..., description="Multi-step price forecasts for the active model horizon")
     is_market_open: bool = Field(..., description=IS_MARKET_OPEN_DESC)
     market_open_time: str = Field(..., description=MARKET_OPEN_TIME_DESC)
     market_close_time: str = Field(..., description=MARKET_CLOSE_TIME_DESC)
@@ -255,8 +277,18 @@ class FanChartPoint(BaseModel):
     """Single forecast point with fan chart quantile bands."""
 
     date: str = Field(..., description="Forecast date")
-    horizon: int = Field(..., ge=1, le=14, description="Days ahead (1-14)")
+    horizon: int = Field(..., ge=1, description="Forecast step index for the active model horizon")
     point_forecast: float = Field(..., description="Point forecast price (USD)")
+
+    @field_validator("horizon")
+    @classmethod
+    def validate_horizon(cls, horizon):
+        max_horizon = int(model_artifacts.horizon)
+        if horizon > max_horizon:
+            raise ValueError(
+                f"Horizon must be between 1 and {max_horizon} for the active model"
+            )
+        return horizon
     p10: float = Field(..., description="10th percentile forecast price (USD)")
     p25: float = Field(..., description="25th percentile forecast price (USD)")
     p50: float = Field(..., description="50th percentile forecast price (USD)")

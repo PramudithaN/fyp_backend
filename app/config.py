@@ -22,9 +22,9 @@ SENTIMENT_MODEL_DIR = (
 # Formula: decayed[t] = sentiment[t] + exp(-LAMBDA) * decayed[t-1]
 SENTIMENT_DECAY_LAMBDA = 0.3
 
-# Model configuration (loaded from config.pkl at runtime)
-LOOKBACK = 30  # Default, will be overwritten from config.pkl
-HORIZON = 14  # Default, will be overwritten from config.pkl
+# Model configuration defaults (runtime artifacts override these values)
+LOOKBACK = 30
+HORIZON = 14
 
 # Feature definitions (must match training exactly)
 LAGS = [1, 2, 3, 5, 7, 10, 14]
@@ -46,7 +46,7 @@ BRENT_TICKER = "BZ=F"
 
 # API settings
 API_TITLE = "Oil Price Prediction API"
-API_DESCRIPTION = "14-day Brent oil price forecasting using VMD-based ensemble model"
+API_DESCRIPTION = "Brent oil price forecasting using the active ensemble model artifacts"
 API_VERSION = "1.0.0"
 
 # NewsAPI configuration (loaded from environment variables)

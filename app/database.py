@@ -298,7 +298,7 @@ def init_database() -> None:
         CREATE INDEX IF NOT EXISTS idx_articles_date ON news_articles(article_date)
     """)
 
-    # Create predictions table (stores each 14-day forecast run)
+    # Create predictions table (stores each forecast run for the active model horizon)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1277,7 +1277,7 @@ def add_prediction(
     forecasts: List[Dict[str, Any]],
 ) -> int:
     """
-    Persist a 14-day forecast run.
+    Persist a forecast run for the active model horizon.
 
     Args:
         generated_at: ISO timestamp of when the prediction was made.

@@ -524,7 +524,7 @@ def scrape_all_sources(
 
 
 # ---------------------------------------------------------------------------
-# Multi-day backfill — fill a range of dates (for the 30-day rolling window)
+# Multi-day backfill — fill a range of dates (for the extended sentiment history window)
 # ---------------------------------------------------------------------------
 
 

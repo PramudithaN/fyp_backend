@@ -52,7 +52,7 @@ class PredictionService:
             sentiment_df: Optional sentiment history (if None, fetches from database)
 
         Returns:
-            List of 14-day forecast dictionaries
+            List of multi-step forecast dictionaries for the active model horizon
         """
         logger.info("Starting prediction pipeline...")
 
@@ -99,7 +99,7 @@ class PredictionService:
     def _handle_price_data(self, prices: pd.DataFrame = None) -> pd.DataFrame:
         """Handle price data loading and validation. Fetches from database instead of external API."""
         if prices is None:
-            logger.info("Auto-fetching 120 days of price history from database...")
+            logger.info("Auto-fetching extended price history from database (120 days for lookback safety margin)...")
             from app.database import get_prices
             return get_prices(days=120)
         
@@ -525,6 +525,11 @@ class PredictionService:
         since we don't have the full VMD decomposition available.
         """
         try:
+            if self.artifacts.arima_model is not None:
+                forecast = self.artifacts.arima_model.forecast(steps=horizon)
+                logger.info("ARIMA forecast generated from saved model")
+                return np.asarray(forecast)
+
             # Use log returns as proxy for trend
             returns = df["log_return"].values
 

@@ -47,17 +47,22 @@ class TestPredictionRequest:
     def test_valid_prediction_request(self, sample_prices_list):
         """Test valid prediction request."""
         from app.schemas.prediction import PredictionRequest
+        from app.models.model_loader import model_artifacts
 
         request = PredictionRequest(prices=sample_prices_list)
-        assert len(request.prices) >= 30
+        assert len(request.prices) >= model_artifacts.lookback
 
     def test_insufficient_prices(self):
         """Test insufficient price data raises error."""
         from app.schemas.prediction import PredictionRequest
+        from app.models.model_loader import model_artifacts
 
         short_list = [
-            {"date": "2026-03-01", "price": 75.50},
-            {"date": "2026-03-02", "price": 76.00},
+            {
+                "date": (datetime(2026, 3, 1) + timedelta(days=i)).strftime("%Y-%m-%d"),
+                "price": 75.50 + i,
+            }
+            for i in range(max(1, model_artifacts.lookback - 1))
         ]
 
         with pytest.raises(ValidationError):
@@ -85,13 +90,14 @@ class TestForecastDay:
     def test_invalid_horizon(self):
         """Test invalid horizon raises error."""
         from app.schemas.prediction import ForecastDay
+        from app.models.model_loader import model_artifacts
 
         with pytest.raises(ValidationError):
             ForecastDay(
                 date="2026-03-15",
                 forecasted_price=75.50,
                 forecasted_return=0.001,
-                horizon=15,  # Greater than 14
+                horizon=model_artifacts.horizon + 1,
             )
 
 
@@ -101,6 +107,7 @@ class TestPredictionResponse:
     def test_valid_prediction_response(self):
         """Test valid prediction response."""
         from app.schemas.prediction import PredictionResponse, ForecastDay
+        from app.models.model_loader import model_artifacts
 
         forecasts = [
             ForecastDay(
@@ -109,7 +116,7 @@ class TestPredictionResponse:
                 forecasted_return=0.001,
                 horizon=i,
             )
-            for i in range(1, 15)
+            for i in range(1, model_artifacts.horizon + 1)
         ]
 
         response = PredictionResponse(
@@ -125,7 +132,7 @@ class TestPredictionResponse:
         )
 
         assert response.success is True
-        assert len(response.forecasts) == 14
+        assert len(response.forecasts) == model_artifacts.horizon
 
 
 class TestHealthResponse:

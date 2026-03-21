@@ -759,12 +759,12 @@ async def get_historical_features_combined(
 )
 async def predict_now():
     """
-    Generate a 14-day forecast based on database data.
+    Generate a forecast based on the active model horizon.
 
     This endpoint:
-    1. Refreshes up to 120 days of historical prices from Yahoo Finance into the database.
-    2. Fetches 120 days of sentiment history from database (Turso).
-    3. Generates a multi-step forecast using the ensemble model.
+    1. Refreshes extended historical prices from Yahoo Finance into the database (120 days for safety margin).
+    2. Fetches extended sentiment history from database (Turso) (120 days for safety margin).
+    3. Generates a multi-step forecast using the ensemble model (step count from active model config).
     4. Persists the forecast to database.
 
     If the live price refresh fails, prediction falls back to the latest stored prices."""
@@ -831,7 +831,7 @@ async def predict_from_uploaded_excel(
 
     Workflow:
     1. Parse uploaded date/price data.
-    2. Build the required lookback window (30 days by model config).
+    2. Build the required lookback window from the active model config.
     3. Fill missing dates using existing database price tables (read-only).
     4. Align sentiment using existing sentiment table (read-only).
     5. Run model prediction and return response payload to frontend.
@@ -1104,7 +1104,7 @@ async def scraper_backfill(
 
     Crawls paginated archives of all news sources, computes sentiment,
     and applies decay for days with no articles. Call once after fresh deployment
-    to fill the 30-day rolling window.
+    to fill sentiment history for the active model's extended lookback window.
 
     Args:
         days_back: Number of days to backfill (default 30).
