@@ -306,9 +306,33 @@ def init_database() -> None:
             last_price_date TEXT NOT NULL,
             last_price REAL NOT NULL,
             forecasts TEXT NOT NULL,
+            prediction_date TEXT,
+            based_on_price_date TEXT,
+            based_on_price REAL,
+            forecast_day_1 REAL,
+            forecast_day_2 REAL,
+            forecast_day_3 REAL,
+            forecast_day_4 REAL,
+            forecast_day_5 REAL,
+            locked_at TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    _ensure_table_column(cursor, "predictions", "prediction_date", "TEXT")
+    _ensure_table_column(cursor, "predictions", "based_on_price_date", "TEXT")
+    _ensure_table_column(cursor, "predictions", "based_on_price", "REAL")
+    _ensure_table_column(cursor, "predictions", "forecast_day_1", "REAL")
+    _ensure_table_column(cursor, "predictions", "forecast_day_2", "REAL")
+    _ensure_table_column(cursor, "predictions", "forecast_day_3", "REAL")
+    _ensure_table_column(cursor, "predictions", "forecast_day_4", "REAL")
+    _ensure_table_column(cursor, "predictions", "forecast_day_5", "REAL")
+    _ensure_table_column(cursor, "predictions", "locked_at", "TEXT")
+    cursor.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_predictions_prediction_date
+        ON predictions(prediction_date)
+        """
+    )
 
     # Create explanations table (stores daily explainability results)
     cursor.execute("""
@@ -1310,19 +1334,167 @@ def add_prediction(
         conn.close()
 
 
-def get_latest_prediction() -> Optional[Dict[str, Any]]:
-    """Return the most recently stored prediction run."""
+def upsert_daily_prediction(
+    prediction_date: str,
+    based_on_price_date: str,
+    based_on_price: float,
+    forecasts: List[Dict[str, Any]],
+    locked_at: Optional[str] = None,
+) -> int:
+    """
+    Upsert one locked prediction row per prediction_date.
+
+    Args:
+        prediction_date: YYYY-MM-DD date key for the daily locked forecast.
+        based_on_price_date: Date of official close used as model input.
+        based_on_price: Closing price used as model input.
+        forecasts: Forecast list from the model (expects at least 5 points).
+        locked_at: Optional ISO timestamp for lock time; defaults to now.
+
+    Returns:
+        Row id of the inserted/updated prediction row.
+    """
+    lock_ts = locked_at or datetime.now().isoformat()
+    normalized_forecasts = forecasts or []
+
+    # Keep first 5 horizons as explicit columns for easy UI/status access.
+    forecast_prices = []
+    for item in normalized_forecasts[:5]:
+        try:
+            forecast_prices.append(float(item.get("forecasted_price")))
+        except (TypeError, ValueError, AttributeError):
+            forecast_prices.append(None)
+    while len(forecast_prices) < 5:
+        forecast_prices.append(None)
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            INSERT INTO predictions (
+                generated_at,
+                last_price_date,
+                last_price,
+                forecasts,
+                prediction_date,
+                based_on_price_date,
+                based_on_price,
+                forecast_day_1,
+                forecast_day_2,
+                forecast_day_3,
+                forecast_day_4,
+                forecast_day_5,
+                locked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(prediction_date) DO UPDATE SET
+                generated_at = excluded.generated_at,
+                last_price_date = excluded.last_price_date,
+                last_price = excluded.last_price,
+                forecasts = excluded.forecasts,
+                based_on_price_date = excluded.based_on_price_date,
+                based_on_price = excluded.based_on_price,
+                forecast_day_1 = excluded.forecast_day_1,
+                forecast_day_2 = excluded.forecast_day_2,
+                forecast_day_3 = excluded.forecast_day_3,
+                forecast_day_4 = excluded.forecast_day_4,
+                forecast_day_5 = excluded.forecast_day_5,
+                locked_at = excluded.locked_at
+            """,
+            (
+                lock_ts,
+                based_on_price_date,
+                based_on_price,
+                json.dumps(normalized_forecasts),
+                prediction_date,
+                based_on_price_date,
+                based_on_price,
+                forecast_prices[0],
+                forecast_prices[1],
+                forecast_prices[2],
+                forecast_prices[3],
+                forecast_prices[4],
+                lock_ts,
+            ),
+        )
+
+        row_id = cursor.lastrowid
+        if row_id is None:
+            cursor.execute(
+                "SELECT id FROM predictions WHERE prediction_date = ?",
+                (prediction_date,),
+            )
+            row = cursor.fetchone()
+            row_id = int(row[0]) if row else 0
+
+        conn.commit()
+        logger.info(
+            "Upserted locked daily prediction id=%s prediction_date=%s based_on=%s",
+            row_id,
+            prediction_date,
+            based_on_price_date,
+        )
+        return int(row_id or 0)
+    except Exception as e:
+        logger.error(f"Error upserting daily prediction: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_prediction_for_date(prediction_date: str) -> Optional[Dict[str, Any]]:
+    """Return locked prediction row for a specific YYYY-MM-DD prediction date."""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT * FROM predictions ORDER BY id DESC LIMIT 1"
+        "SELECT * FROM predictions WHERE prediction_date = ? ORDER BY id DESC LIMIT 1",
+        (prediction_date,),
     )
     result = _fetchone_dict(cursor)
     conn.close()
-    if result:
-        result["forecasts"] = json.loads(result["forecasts"])
-        return result
-    return None
+
+    if not result:
+        return None
+
+    try:
+        result["forecasts"] = json.loads(result.get("forecasts") or "[]")
+    except Exception:
+        result["forecasts"] = []
+    return result
+
+
+def get_latest_locked_prediction() -> Optional[Dict[str, Any]]:
+    """Return latest locked prediction, preferring prediction_date when available."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT *
+        FROM predictions
+        ORDER BY
+            CASE WHEN prediction_date IS NULL OR prediction_date = '' THEN 1 ELSE 0 END,
+            prediction_date DESC,
+            id DESC
+        LIMIT 1
+        """
+    )
+    result = _fetchone_dict(cursor)
+    conn.close()
+
+    if not result:
+        return None
+
+    try:
+        result["forecasts"] = json.loads(result.get("forecasts") or "[]")
+    except Exception:
+        result["forecasts"] = []
+    return result
+
+
+def get_latest_prediction() -> Optional[Dict[str, Any]]:
+    """Return the most recently stored prediction run."""
+    return get_latest_locked_prediction()
 
 
 def get_prediction_history(limit: int = 10) -> List[Dict[str, Any]]:

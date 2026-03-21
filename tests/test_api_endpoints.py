@@ -155,26 +155,14 @@ class TestPredictEndpoint:
     """Tests for prediction endpoint."""
 
     @patch("app.main.get_market_status")
-    @patch("app.main.fetch_live_price_snapshot")
-    @patch("app.main.prediction_service.predict")
-    @patch("app.main._sync_latest_prices")
+    @patch("app.main.get_prediction_for_date")
     def test_predict_success(
         self,
-        mock_sync_prices,
-        mock_predict,
-        mock_live_snapshot,
+        mock_get_prediction_for_date,
         mock_get_market_status,
         test_client,
-        sample_prices_df,
     ):
-        """Test successful prediction."""
-        mock_sync_prices.return_value = sample_prices_df
-        mock_live_snapshot.return_value = {
-            "price": 92.0,
-            "as_of": "2026-03-17T10:00:00",
-            "as_of_date": "2026-03-17",
-            "source": "yahoo_finance_intraday",
-        }
+        """Test /predict returns today's locked forecast from database."""
         mock_get_market_status.return_value = {
             "is_open": True,
             "market_state": "REGULAR",
@@ -184,8 +172,7 @@ class TestPredictEndpoint:
             "timezone_info": "Exchange timezone: Europe/London",
         }
 
-        # Mock prediction result
-        mock_forecasts = [
+        locked_forecasts = [
             {
                 "date": (datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d"),
                 "forecasted_price": 75.0 + i * 0.5,
@@ -194,7 +181,13 @@ class TestPredictEndpoint:
             }
             for i in range(1, 15)
         ]
-        mock_predict.return_value = mock_forecasts
+        mock_get_prediction_for_date.return_value = {
+            "prediction_date": datetime.now().strftime("%Y-%m-%d"),
+            "based_on_price_date": "2026-03-17",
+            "based_on_price": 92.0,
+            "locked_at": "2026-03-18T18:02:00",
+            "forecasts": locked_forecasts,
+        }
 
         response = test_client.get("/predict")
         assert response.status_code == 200
@@ -209,71 +202,73 @@ class TestPredictEndpoint:
         assert data["market_open_time"] == "01:00 UTC"
         assert data["market_close_time"] == "23:00 UTC"
         assert data["timezone_info"] == "Exchange timezone: Europe/London"
-        mock_sync_prices.assert_called_once_with(lookback_days=120)
-        synced_prices = mock_predict.call_args.kwargs["prices"]
-        pd.testing.assert_frame_equal(synced_prices, sample_prices_df)
 
-    @patch("app.main.prediction_service.predict")
-    def test_predict_validation_error(self, mock_predict, test_client):
-        """Test prediction handles validation errors."""
-        mock_predict.side_effect = ValueError("Invalid data")
-
-        response = test_client.get("/predict")
-        assert response.status_code == 400
-
-    @patch("app.main.prediction_service.predict")
-    def test_predict_server_error(self, mock_predict, test_client):
-        """Test prediction handles server errors."""
-        mock_predict.side_effect = Exception("Model error")
-
-        response = test_client.get("/predict")
-        assert response.status_code == 500
-
-    @patch("app.main.fetch_live_price_snapshot")
-    @patch("app.main.prediction_service.predict")
-    @patch("app.main._sync_latest_prices")
-    def test_predict_aligns_forecast_dates_with_live_snapshot(
+    @patch("app.main.get_market_status")
+    @patch("app.main.get_latest_locked_prediction")
+    @patch("app.main.get_prediction_for_date")
+    def test_predict_falls_back_to_latest_record(
         self,
-        mock_sync_prices,
-        mock_predict,
-        mock_live_snapshot,
+        mock_get_prediction_for_date,
+        mock_get_latest_locked_prediction,
+        mock_get_market_status,
         test_client,
     ):
-        """Forecast dates should start after the last_price_date exposed by the API."""
-        mock_sync_prices.return_value = pd.DataFrame(
-            {
-                "date": pd.to_datetime(["2026-03-19", "2026-03-20"]),
-                "price": [84.0, 85.0],
-            }
-        )
-        mock_live_snapshot.return_value = {
-            "price": 86.0,
-            "as_of": "2026-03-21T10:15:00",
-            "as_of_date": "2026-03-21",
-            "source": "yahoo_finance_intraday",
+        """If today's record is missing, endpoint should return the latest locked forecast."""
+        mock_get_market_status.return_value = {
+            "is_open": False,
+            "market_state": "CLOSED",
+            "message": "Market closed (CLOSED)",
+            "market_open_time": "01:00 UTC",
+            "market_close_time": "23:00 UTC",
+            "timezone_info": "Exchange timezone: Europe/London",
         }
-        mock_predict.return_value = [
-            {
-                "date": "2026-03-21",
-                "forecasted_price": 87.0,
-                "forecasted_return": 0.01,
-                "horizon": 1,
-            },
-            {
-                "date": "2026-03-24",
-                "forecasted_price": 88.0,
-                "forecasted_return": 0.01,
-                "horizon": 2,
-            },
-        ]
+        mock_get_prediction_for_date.return_value = None
+        mock_get_latest_locked_prediction.return_value = {
+            "prediction_date": "2026-03-20",
+            "based_on_price_date": "2026-03-19",
+            "based_on_price": 85.5,
+            "locked_at": "2026-03-20T18:00:00",
+            "forecasts": [
+                {
+                    "date": "2026-03-21",
+                    "forecasted_price": 86.0,
+                    "forecasted_return": 0.01,
+                    "horizon": 1,
+                }
+            ],
+        }
 
         response = test_client.get("/predict")
-
         assert response.status_code == 200
         body = response.json()
-        assert body["last_price_date"] == "2026-03-21"
-        assert body["forecasts"][0]["date"] == "2026-03-23"
-        assert body["forecasts"][1]["date"] == "2026-03-24"
+        assert body["prediction_date"] == "2026-03-20"
+        assert body["last_price_date"] == "2026-03-19"
+        assert body["last_price"] == pytest.approx(85.5)
+
+    @patch("app.main.get_market_status")
+    @patch("app.main.get_latest_locked_prediction")
+    @patch("app.main.get_prediction_for_date")
+    def test_predict_returns_503_when_no_locked_forecast(
+        self,
+        mock_get_prediction_for_date,
+        mock_get_latest_locked_prediction,
+        mock_get_market_status,
+        test_client,
+    ):
+        """When no stored locked rows exist, endpoint should return 503."""
+        mock_get_market_status.return_value = {
+            "is_open": False,
+            "market_state": "CLOSED",
+            "message": "Market closed (CLOSED)",
+            "market_open_time": "01:00 UTC",
+            "market_close_time": "23:00 UTC",
+            "timezone_info": "Exchange timezone: Europe/London",
+        }
+        mock_get_prediction_for_date.return_value = None
+        mock_get_latest_locked_prediction.return_value = None
+
+        response = test_client.get("/predict")
+        assert response.status_code == 503
 
 
 class TestUploadPredictionEndpoints:

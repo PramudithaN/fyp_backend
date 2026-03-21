@@ -81,6 +81,26 @@ class PredictionResponse(BaseModel):
     market_open_time: str = Field(..., description=MARKET_OPEN_TIME_DESC)
     market_close_time: str = Field(..., description=MARKET_CLOSE_TIME_DESC)
     timezone_info: str = Field(..., description=TIMEZONE_INFO_DESC)
+    generated_at: Optional[str] = Field(
+        None,
+        description="Timestamp when the locked daily forecast record was generated",
+    )
+    prediction_date: Optional[str] = Field(
+        None,
+        description="Daily forecast key date (YYYY-MM-DD)",
+    )
+    based_on_price_date: Optional[str] = Field(
+        None,
+        description="Official close date used as model input",
+    )
+    based_on_price: Optional[float] = Field(
+        None,
+        description="Official close price used as model input",
+    )
+    next_update_at: Optional[str] = Field(
+        None,
+        description="Next scheduled locked forecast refresh timestamp",
+    )
 
 
 class UploadWindowStats(BaseModel):

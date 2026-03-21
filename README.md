@@ -22,6 +22,7 @@ FastAPI backend for Brent oil price forecasting using a trained ensemble model.
 ## Features
 
 - **14-day price forecast** using VMD-based ensemble model
+- **Locked daily forecast**: one prediction record per day, refreshed after market close
 - **Automatic price fetching** from Yahoo Finance (BZ=F ticker)
 - **REST API** with both auto and manual prediction modes
 - **Sentiment Analysis** using FinBERT
@@ -49,6 +50,10 @@ Configure the application using environment variables (create a `.env` file):
 | `PREDICT_CACHE_TTL_SECONDS` | `45` | In-memory TTL (seconds) for the latest forecast returned by `/predict` |
 | `PREDICTION_PRECOMPUTE_ENABLED` | `true` | Enables background forecast refresh so `/predict` can return warm cached responses |
 | `PREDICTION_PRECOMPUTE_INTERVAL_SECONDS` | `900` | Background precompute interval in seconds (default 15 minutes) |
+| `PREDICTION_LOCK_SCHEDULE_ENABLED` | `true` | Enables daily locked prediction scheduler |
+| `PREDICTION_LOCK_SCHEDULE_HOUR` | `17` | Daily lock job hour (scheduler timezone) |
+| `PREDICTION_LOCK_SCHEDULE_MINUTE` | `30` | Daily lock job minute (scheduler timezone) |
+| `PREDICTION_LOCK_SCHEDULE_TIMEZONE` | `America/New_York` | Timezone used for daily lock schedule |
 | `HF_SPACE_TARGET` | - | Hugging Face Space host used by local Prometheus scraper (e.g., `your-space.hf.space`) |
 | `GRAFANA_REMOTE_WRITE_URL` | - | Grafana Cloud Prometheus remote-write endpoint |
 | `GRAFANA_METRICS_USER_ID` | - | Grafana Cloud metrics username |
@@ -74,7 +79,8 @@ The FinBERT sentiment model is loaded from Hugging Face on first use. For deploy
 
 | Endpoint   | Method | Description                   |
 | ---------- | ------ | ----------------------------- |
-| `/predict` | GET    | Auto-fetch prices and predict |
+| `/predict` | GET    | Return locked daily forecast from database |
+| `/predictions/lock/run` | POST | Manually trigger daily locked forecast generation |
 | `/predictions/fan` | GET | Fan chart quantile bands for latest forecast |
 | `/predictions/compare` | GET | Compare stored forecasts vs actual prices |
 | `/prices`  | GET    | View fetched price data       |
@@ -91,12 +97,26 @@ The FinBERT sentiment model is loaded from Hugging Face on first use. For deploy
 # Generate latest 14-day forecast
 curl http://localhost:8000/predict
 
+# Manually run today's locked daily forecast
+curl -X POST http://localhost:8000/predictions/lock/run
+ 
 # Fan chart bands for frontend visualization
 curl "http://localhost:8000/predictions/fan?min_samples_per_horizon=20"
 
 # Historical actual vs predicted comparison
 curl "http://localhost:8000/predictions/compare?start_date=2025-01-01&end_date=2025-12-31"
 ```
+
+## Daily Locked Forecast Flow
+
+The backend now uses a lock-once-per-day workflow:
+
+1. At 5:30 PM ET (configurable), a scheduler job runs once.
+2. It fetches historical prices and selects the previous trading day's official close.
+3. The model generates forecast output and stores one locked row for that `prediction_date`.
+4. All daytime `/predict` requests read from the database record only (no model rerun).
+
+This removes intraday drift and prevents prediction-table duplicates.
 
 ## Model Artifacts
 

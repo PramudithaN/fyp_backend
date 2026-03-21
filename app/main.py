@@ -15,11 +15,12 @@ import logging
 import os
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, date, time, timedelta
 from functools import partial
 from threading import RLock
 from time import monotonic
 from typing import Annotated
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Header, UploadFile, File, Response
@@ -35,25 +36,34 @@ from app.config import (
     PREDICT_CACHE_TTL_SECONDS,
     PREDICTION_PRECOMPUTE_ENABLED,
     PREDICTION_PRECOMPUTE_INTERVAL_SECONDS,
+    PREDICTION_LOCK_SCHEDULE_HOUR,
+    PREDICTION_LOCK_SCHEDULE_MINUTE,
+    PREDICTION_LOCK_SCHEDULE_TIMEZONE,
     SKIP_FINBERT_PRELOAD,
     SCRAPER_API_KEY,
 )
 from app.models.model_loader import model_artifacts
 from app.database import (
-    init_database,
     add_prediction,
+    init_database,
     get_actual_vs_predicted_until,
+    get_latest_locked_prediction,
     get_latest_prediction_fan_chart,
+    get_prediction_for_date,
     get_news_articles,
     get_recent_news_articles,
 )
 from app.services.price_fetcher import (
     fetch_latest_prices,
     fetch_live_price_snapshot,
-    get_last_n_trading_days,
     get_market_status,
 )
 from app.services.prediction import prediction_service
+from app.services.prediction_scheduler import (
+    init_prediction_scheduler,
+    shutdown_prediction_scheduler,
+    trigger_prediction_job_now,
+)
 from app.services.upload_prediction import (
     run_prediction_from_uploaded_excel,
     build_upload_excel_template_bytes,
@@ -290,6 +300,55 @@ def _cache_enabled() -> bool:
     return "PYTEST_CURRENT_TEST" not in os.environ
 
 
+def _current_prediction_date_local() -> str:
+    """Return prediction date key using the configured scheduler timezone."""
+    tz = ZoneInfo(PREDICTION_LOCK_SCHEDULE_TIMEZONE)
+    return datetime.now(tz).strftime("%Y-%m-%d")
+
+
+def _next_locked_update_iso(now_local: datetime | None = None) -> str:
+    """Return next scheduled lock refresh timestamp in configured local timezone."""
+    tz = ZoneInfo(PREDICTION_LOCK_SCHEDULE_TIMEZONE)
+    local_now = now_local.astimezone(tz) if now_local is not None else datetime.now(tz)
+
+    next_update = datetime.combine(
+        local_now.date(),
+        time(hour=PREDICTION_LOCK_SCHEDULE_HOUR, minute=PREDICTION_LOCK_SCHEDULE_MINUTE),
+        tzinfo=tz,
+    )
+    if local_now >= next_update:
+        next_update = next_update + timedelta(days=1)
+
+    return next_update.isoformat()
+
+
+def _prediction_response_from_record(record: dict, market: dict) -> PredictionResponse:
+    """Map a stored locked prediction record to PredictionResponse."""
+    based_on_price_date = record.get("based_on_price_date") or record.get("last_price_date")
+    based_on_price = record.get("based_on_price")
+    if based_on_price is None:
+        based_on_price = record.get("last_price", 0.0)
+
+    forecasts = record.get("forecasts") or []
+
+    return PredictionResponse(
+        success=True,
+        data_source=f"Yahoo Finance ({BRENT_TICKER})",
+        last_price_date=str(based_on_price_date),
+        last_price=round(float(based_on_price), 2),
+        forecasts=forecasts,
+        is_market_open=market["is_open"],
+        market_open_time=market["market_open_time"],
+        market_close_time=market["market_close_time"],
+        timezone_info=market["timezone_info"],
+        generated_at=str(record.get("locked_at") or record.get("generated_at") or ""),
+        prediction_date=str(record.get("prediction_date") or ""),
+        based_on_price_date=str(based_on_price_date),
+        based_on_price=round(float(based_on_price), 2),
+        next_update_at=_next_locked_update_iso(),
+    )
+
+
 def _sync_latest_prices(lookback_days: int = 120) -> pd.DataFrame:
     """Fetch the latest available market prices and upsert them into the database."""
     from app.database import add_bulk_prices, get_prices as get_prices_db
@@ -401,8 +460,6 @@ def _aggregate_historical_features(df: pd.DataFrame, granularity: str) -> pd.Dat
 async def lifespan(app: FastAPI):
     """Load models and initialize database on startup."""
     logger.info("Starting application...")
-    precompute_task: asyncio.Task | None = None
-    precompute_stop_event = asyncio.Event()
     
     # Initialize sentiment database
     try:
@@ -433,11 +490,15 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("FinBERT preload skipped (SKIP_FINBERT_PRELOAD=true)")
 
-    if PREDICTION_PRECOMPUTE_ENABLED and _cache_enabled():
-        precompute_task = asyncio.create_task(_prediction_precompute_loop(precompute_stop_event))
-        logger.info("Prediction precompute enabled")
-    else:
-        logger.info("Prediction precompute disabled")
+    logger.info(
+        "Prediction precompute loop disabled: serving locked daily forecasts from database"
+    )
+
+    try:
+        init_prediction_scheduler()
+        logger.info("Daily locked prediction scheduler initialized")
+    except Exception as e:
+        logger.warning(f"Prediction scheduler initialization failed: {e}", exc_info=True)
 
     # Initialize explainability scheduler (must run in async context, not threadpool)
     try:
@@ -460,12 +521,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Explainability scheduler shutdown failed: {e}")
 
-    precompute_stop_event.set()
-    if precompute_task is not None:
-        try:
-            await precompute_task
-        except Exception as exc:
-            logger.warning("Prediction precompute task shutdown failed: %s", exc)
+    try:
+        shutdown_prediction_scheduler()
+    except Exception as e:
+        logger.warning(f"Prediction scheduler shutdown failed: {e}")
+
     logger.info("Application shutting down...")
 
 
@@ -754,28 +814,81 @@ async def get_historical_features_combined(
             "model": ErrorResponse,
             "description": "Invalid input or validation error",
         },
+        503: {
+            "model": ErrorResponse,
+            "description": "No locked forecast is currently available",
+        },
         500: {"model": ErrorResponse, "description": "Server error during prediction"},
     },
 )
 async def predict_now():
     """
-    Generate a forecast based on the active model horizon.
+    Return the locked daily forecast from database.
 
-    This endpoint:
-    1. Refreshes extended historical prices from Yahoo Finance into the database (120 days for safety margin).
-    2. Fetches extended sentiment history from database (Turso) (120 days for safety margin).
-    3. Generates a multi-step forecast using the ensemble model (step count from active model config).
-    4. Persists the forecast to database.
+    Request path is read-only:
+    - Does not fetch Yahoo prices
+    - Does not run model inference
+    - Does not write new prediction rows
 
-    If the live price refresh fails, prediction falls back to the latest stored prices."""
+    Selection logic:
+    1. Try today's locked prediction_date in scheduler timezone.
+    2. If missing, fallback to latest available locked record.
+    """
     try:
-        return await _refresh_prediction_cache(force_refresh=False, persist_forecast=True)
+        market = await run_in_threadpool(get_market_status)
+        today_key = _current_prediction_date_local()
 
+        todays_record = None
+        latest_record = None
+        try:
+            todays_record = await run_in_threadpool(get_prediction_for_date, today_key)
+        except Exception as db_err:
+            logger.warning("Failed reading today's locked prediction: %s", db_err)
+
+        if todays_record:
+            return _prediction_response_from_record(todays_record, market)
+
+        try:
+            latest_record = await run_in_threadpool(get_latest_locked_prediction)
+        except Exception as db_err:
+            logger.warning("Failed reading latest locked prediction: %s", db_err)
+
+        if latest_record:
+            return _prediction_response_from_record(latest_record, market)
+
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No locked daily forecast available yet. "
+                "Wait for the scheduled prediction job or trigger it manually."
+            ),
+        )
+
+    except HTTPException:
+        raise
     except ValueError as e:
         logger.error(f"Validation error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Prediction error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/predictions/lock/run",
+    responses={
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error during locked prediction generation",
+        },
+    },
+)
+async def run_locked_prediction_now():
+    """Manually trigger today's locked prediction generation job."""
+    try:
+        return await run_in_threadpool(trigger_prediction_job_now)
+    except Exception as e:
+        logger.error("Manual locked prediction trigger failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
