@@ -52,7 +52,11 @@ from app.database import (
     get_prices as get_prices_db,
     get_news_articles,
 )
-from app.services.prediction import prediction_service
+from app.services.prediction_snapshot import (
+    LockedPredictionUnavailableError,
+    current_prediction_date_local,
+    get_required_locked_prediction_snapshot,
+)
 from app.services.sentiment_service import sentiment_service
 from app.services.feature_engineering import engineer_all_features
 
@@ -164,15 +168,9 @@ class ExplainabilityService:
         """
         job_start = time.time()
         today = date.today().strftime("%Y-%m-%d")
+        explanation_date = today
 
         logger.info(f"Starting daily explainability job for {today}")
-
-        # Step 0a: Check if today's explanation already exists
-        from app.database import explanation_exists_for_date
-
-        if explanation_exists_for_date(today):
-            logger.info(f"Explanation already exists for {today}, skipping computation")
-            return {"status": "skipped", "reason": "already_computed"}
 
         # Step 0b: Validate that today's prices are available (critical check)
         try:
@@ -195,6 +193,20 @@ class ExplainabilityService:
             # Step 1: Generate prediction and fetch data
             logger.info("Step 1: Generating prediction...")
             prediction_result, prices_df, _ = self._fetch_prediction_data()
+            explanation_date = str(prediction_result.get("prediction_date") or today)
+
+            # Step 1b: Skip if explanation already exists for this prediction snapshot date
+            from app.database import explanation_exists_for_date
+            if explanation_exists_for_date(explanation_date):
+                logger.info(
+                    "Explanation already exists for prediction date %s, skipping computation",
+                    explanation_date,
+                )
+                return {
+                    "status": "skipped",
+                    "reason": "already_computed",
+                    "date": explanation_date,
+                }
 
             # Step 2: ARIMA explainability
             logger.info("Step 2: Computing ARIMA decomposition...")
@@ -236,10 +248,10 @@ class ExplainabilityService:
 
             # Step 9: Build full dashboard-ready XAI payload and store
             logger.info("Step 9: Storing explanation in database...")
-            xai_payload = self._build_xai_payload(today, aggregated, llm_result)
+            xai_payload = self._build_xai_payload(explanation_date, aggregated, llm_result)
             computation_time = time.time() - job_start
             self._store_explanation(
-                today, aggregated, explanation_text, computation_time, xai_payload
+                explanation_date, aggregated, explanation_text, computation_time, xai_payload
             )
 
             logger.info(
@@ -247,8 +259,19 @@ class ExplainabilityService:
             )
             return {
                 "status": "success",
-                "date": today,
+                "date": explanation_date,
                 "computation_time_seconds": computation_time,
+            }
+
+        except LockedPredictionUnavailableError as e:
+            logger.warning(
+                "Deferring explainability job: locked prediction not available yet (%s)",
+                e,
+            )
+            return {
+                "status": "deferred",
+                "reason": "locked_prediction_not_available",
+                "date": explanation_date,
             }
 
         except Exception as e:
@@ -309,16 +332,18 @@ class ExplainabilityService:
                 f"for end-of-day explanations. Proceeding with computation."
             )
 
-        # Generate prediction
-        forecasts = prediction_service.predict(prices=latest_prices)
-
-        close_price = float(latest_prices["price"].iloc[-1])
         close_date = pd.to_datetime(latest_prices["date"].iloc[-1]).strftime("%Y-%m-%d")
 
+        # Use the same locked forecast source as `/predict` to keep values consistent.
+        snapshot = get_required_locked_prediction_snapshot(
+            prediction_date=current_prediction_date_local()
+        )
+
         prediction_result = {
-            "last_price": close_price,
-            "last_date": close_date,
-            "forecasts": forecasts,
+            "last_price": float(snapshot["last_price"]),
+            "last_date": str(snapshot["last_price_date"]),
+            "prediction_date": str(snapshot.get("prediction_date") or ""),
+            "forecasts": snapshot["forecasts"],
         }
 
         # VALIDATION: Ensure prediction is recent (not yesterday when it's a new day)
@@ -1192,23 +1217,26 @@ RISK_NOTE:
 
     def _parse_llm_sections(self, text: str, model_used: str) -> Dict[str, Any]:
         """Parse HEADLINE / NARRATIVE / SENTIMENT_STORY / RISK_NOTE sections from LLM output."""
-        sections: Dict[str, str] = {"HEADLINE": "", "NARRATIVE": "", "SENTIMENT_STORY": "", "RISK_NOTE": ""}
+        sections: Dict[str, str] = {
+            "HEADLINE": "",
+            "NARRATIVE": "",
+            "SENTIMENT_STORY": "",
+            "RISK_NOTE": "",
+        }
         current: Optional[str] = None
         buffer: List[str] = []
 
         for line in text.splitlines():
-            stripped = line.strip()
-            matched = False
-            for key in sections:
-                if stripped.upper().startswith(key + ":"):
-                    if current:
-                        sections[current] = "\n".join(buffer).strip()
-                    current = key
-                    after_colon = stripped[len(key) + 1:].strip()
-                    buffer = [after_colon] if after_colon else []
-                    matched = True
-                    break
-            if not matched and current:
+            header = self._parse_section_header(line, sections)
+            if header is not None:
+                if current:
+                    sections[current] = "\n".join(buffer).strip()
+                current = header["key"]
+                first_line = header["value"]
+                buffer = [first_line] if first_line else []
+                continue
+
+            if current:
                 buffer.append(line)
 
         if current:
@@ -1226,6 +1254,68 @@ RISK_NOTE:
             "risk_note": sections["RISK_NOTE"],
             "model_used": model_used,
         }
+
+    def _parse_section_header(
+        self,
+        line: str,
+        sections: Dict[str, str],
+    ) -> Optional[Dict[str, str]]:
+        """Return section key/value if line starts with a known SECTION: prefix."""
+        stripped = line.strip()
+        upper = stripped.upper()
+
+        for key in sections:
+            prefix = key + ":"
+            if upper.startswith(prefix):
+                return {
+                    "key": key,
+                    "value": stripped[len(prefix):].strip(),
+                }
+
+        return None
+
+    def _build_feature_summary_text(self, top_features: List[Dict[str, Any]]) -> str:
+        """Build short text about top 1-2 SHAP features."""
+        if not top_features:
+            return ""
+
+        top = top_features[0]
+        fdir = "upward" if top.get("shap_value", 0) > 0 else "downward"
+        fname = top["feature_name"].replace("_", " ")
+        feature_text = (
+            f", driven primarily by {fname} exerting {fdir} pressure "
+            f"(SHAP: {top['shap_value']:+.3f})"
+        )
+
+        if len(top_features) > 1:
+            second = top_features[1]
+            feature_text += (
+                f" followed by {second['feature_name'].replace('_', ' ')} "
+                f"({second['shap_value']:+.3f})"
+            )
+
+        return feature_text
+
+    def _build_sentiment_summary_text(self, headlines: List[Dict[str, Any]]) -> str:
+        """Build one sentence summarizing headline-level sentiment balance."""
+        n = len(headlines)
+        if n == 0:
+            return "Sentiment data was unavailable for this period"
+
+        bullish = sum(1 for h in headlines if h.get("sentiment_label") == "bullish")
+        bearish = sum(1 for h in headlines if h.get("sentiment_label") == "bearish")
+
+        if bullish > bearish:
+            return (
+                f"Market sentiment leans bullish with {bullish} of {n} recent "
+                "headline(s) carrying a positive signal"
+            )
+        if bearish > bullish:
+            return (
+                f"Market sentiment leans bearish with {bearish} of {n} recent "
+                "headline(s) carrying a negative signal"
+            )
+        return "Market sentiment is broadly neutral across recent headlines"
 
     def _generate_llm_narrative(
         self,
@@ -1333,31 +1423,11 @@ RISK_NOTE:
         )
         dominant_text = f" ({dominant_model.replace('_', '-')} was the dominant sub-model)" if dominant_model else ""
 
-        # Top feature
         top_features = aggregated.get("top_features", [])
-        feature_text = ""
-        if top_features:
-            top = top_features[0]
-            fdir = "upward" if top.get("shap_value", 0) > 0 else "downward"
-            fname = top["feature_name"].replace("_", " ")
-            feature_text = f", driven primarily by {fname} exerting {fdir} pressure (SHAP: {top['shap_value']:+.3f})"
-            if len(top_features) > 1:
-                second = top_features[1]
-                feature_text += f" followed by {second['feature_name'].replace('_', ' ')} ({second['shap_value']:+.3f})"
+        feature_text = self._build_feature_summary_text(top_features)
 
-        # Sentiment
         headlines = aggregated.get("sentiment_headlines", [])
-        bullish = sum(1 for h in headlines if h.get("sentiment_label") == "bullish")
-        bearish = sum(1 for h in headlines if h.get("sentiment_label") == "bearish")
-        n = len(headlines)
-        if n == 0:
-            sent_text = "Sentiment data was unavailable for this period"
-        elif bullish > bearish:
-            sent_text = f"Market sentiment leans bullish with {bullish} of {n} recent headline(s) carrying a positive signal"
-        elif bearish > bullish:
-            sent_text = f"Market sentiment leans bearish with {bearish} of {n} recent headline(s) carrying a negative signal"
-        else:
-            sent_text = "Market sentiment is broadly neutral across recent headlines"
+        sent_text = self._build_sentiment_summary_text(headlines)
 
         # Contributions
         arima = aggregated.get("arima_contribution", 0.0)

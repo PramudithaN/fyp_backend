@@ -47,9 +47,7 @@ from app.database import (
     add_prediction,
     init_database,
     get_actual_vs_predicted_until,
-    get_latest_locked_prediction,
     get_latest_prediction_fan_chart,
-    get_prediction_for_date,
     get_news_articles,
     get_recent_news_articles,
 )
@@ -59,6 +57,10 @@ from app.services.price_fetcher import (
     get_market_status,
 )
 from app.services.prediction import prediction_service
+from app.services.prediction_snapshot import (
+    current_prediction_date_local,
+    get_locked_prediction_snapshot,
+)
 from app.services.prediction_scheduler import (
     init_prediction_scheduler,
     shutdown_prediction_scheduler,
@@ -337,8 +339,7 @@ def _cache_enabled() -> bool:
 
 def _current_prediction_date_local() -> str:
     """Return prediction date key using the configured scheduler timezone."""
-    tz = ZoneInfo(PREDICTION_LOCK_SCHEDULE_TIMEZONE)
-    return datetime.now(tz).strftime("%Y-%m-%d")
+    return current_prediction_date_local()
 
 
 def _next_locked_update_iso(now_local: datetime | None = None) -> str:
@@ -358,13 +359,10 @@ def _next_locked_update_iso(now_local: datetime | None = None) -> str:
 
 
 def _prediction_response_from_record(record: dict, market: dict) -> PredictionResponse:
-    """Map a stored locked prediction record to PredictionResponse."""
-    based_on_price_date = record.get("based_on_price_date") or record.get("last_price_date")
-    based_on_price = record.get("based_on_price")
-    if based_on_price is None:
-        based_on_price = record.get("last_price", 0.0)
-
-    forecasts = record.get("forecasts") or []
+    """Map a canonical prediction snapshot to PredictionResponse."""
+    based_on_price_date = record["based_on_price_date"]
+    based_on_price = record["based_on_price"]
+    forecasts = record["forecasts"]
 
     return PredictionResponse(
         success=True,
@@ -882,24 +880,10 @@ async def predict_now():
             _cache_market_status(market)
         
         today_key = _current_prediction_date_local()
+        snapshot = await run_in_threadpool(get_locked_prediction_snapshot, today_key)
 
-        todays_record = None
-        latest_record = None
-        try:
-            todays_record = await run_in_threadpool(get_prediction_for_date, today_key)
-        except Exception as db_err:
-            logger.warning("Failed reading today's locked prediction: %s", db_err)
-
-        if todays_record:
-            return _prediction_response_from_record(todays_record, market)
-
-        try:
-            latest_record = await run_in_threadpool(get_latest_locked_prediction)
-        except Exception as db_err:
-            logger.warning("Failed reading latest locked prediction: %s", db_err)
-
-        if latest_record:
-            return _prediction_response_from_record(latest_record, market)
+        if snapshot:
+            return _prediction_response_from_record(snapshot, market)
 
         raise HTTPException(
             status_code=503,
@@ -1385,7 +1369,14 @@ async def get_explanation(
     from app.database import get_explanation_for_date
 
     if explanation_date is None:
-        explanation_date = datetime.now().strftime("%Y-%m-%d")
+        snapshot = await run_in_threadpool(
+            get_locked_prediction_snapshot,
+            _current_prediction_date_local(),
+        )
+        if snapshot and snapshot.get("prediction_date"):
+            explanation_date = str(snapshot["prediction_date"])
+        else:
+            explanation_date = datetime.now().strftime("%Y-%m-%d")
 
     # Validate date format
     try:
@@ -1393,7 +1384,7 @@ async def get_explanation(
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail="Invalid date format. Expected YYYY-MM-DD",
+            detail=INVALID_DATE_DETAIL,
         )
 
     try:
@@ -1467,6 +1458,7 @@ async def get_explanation(
         200: {"description": "Regenerated explanation"},
         400: {"model": ErrorResponse, "description": "Invalid date"},
         503: {"model": ErrorResponse, "description": "Prices not available"},
+        500: {"model": ErrorResponse, "description": "Server error regenerating explanation"},
     },
 )
 async def regenerate_explanation(
@@ -1489,9 +1481,9 @@ async def regenerate_explanation(
     try:
         datetime.strptime(explanation_date, "%Y-%m-%d")
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD")
+        raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
 
-    async def _run():
+    def _run():
         import warnings
         warnings.filterwarnings("ignore")
         t0 = _time.time()
