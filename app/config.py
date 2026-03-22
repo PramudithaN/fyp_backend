@@ -58,6 +58,14 @@ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 PEXELS_PER_PAGE = int(os.getenv("PEXELS_PER_PAGE", "15"))
 PEXELS_TIMEOUT_SECONDS = int(os.getenv("PEXELS_TIMEOUT_SECONDS", "10"))
 
+# Groq API configuration (for LLM narrative generation)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_LLM_MODEL = os.getenv("GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
+
+# XAI metadata constants
+HORIZON_ACCURACY = float(os.getenv("HORIZON_ACCURACY", "77.3"))   # H5 directional accuracy %
+MODEL_VERSION = os.getenv("MODEL_VERSION", "v10")
+
 # Hugging Face API configuration (for Mistral keyword extraction)
 HUGGING_FACE_API_TOKEN = os.getenv("HUGGING_FACE_API_TOKEN", "")
 HUGGING_FACE_LLM_MODEL = os.getenv(

@@ -354,12 +354,21 @@ def init_database() -> None:
             model_weights TEXT NOT NULL,
             generated_at TEXT NOT NULL,
             computation_time_seconds REAL NOT NULL,
+            xai_payload TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_explanations_date ON explanations(explanation_date)
     """)
+
+    # Migrate existing DB instances: add xai_payload column if absent
+    try:
+        cursor.execute("ALTER TABLE explanations ADD COLUMN xai_payload TEXT")
+        conn.commit()
+        logger.info("Migrated explanations table: added xai_payload column")
+    except Exception:
+        pass  # Column already exists — safe to ignore
 
     conn.commit()
     conn.close()
@@ -1991,6 +2000,7 @@ def add_explanation(
     explanation_text: str,
     generated_at: str,
     computation_time_seconds: float,
+    xai_payload: Optional[Dict[str, Any]] = None,
 ) -> int:
     """
     Store a daily explainability result.
@@ -2001,6 +2011,7 @@ def add_explanation(
         explanation_text: Plain English narrative (3-sentence explanation).
         generated_at: ISO timestamp when computation occurred.
         computation_time_seconds: How long the computation took.
+        xai_payload: Optional full dashboard-ready JSON payload.
 
     Returns:
         Row id of the inserted record.
@@ -2015,8 +2026,9 @@ def add_explanation(
                 confidence_interval_upper, arima_contribution, gru_mid_contribution,
                 gru_sent_contribution, xgb_hf_contribution, agreement_score,
                 confidence_level, top_shap_features, sentiment_headlines,
-                explanation_text, model_weights, generated_at, computation_time_seconds
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                explanation_text, model_weights, generated_at, computation_time_seconds,
+                xai_payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 explanation_date,
@@ -2035,6 +2047,7 @@ def add_explanation(
                 json.dumps(aggregated["model_weights"]),
                 generated_at,
                 computation_time_seconds,
+                json.dumps(xai_payload) if xai_payload is not None else None,
             ),
         )
         row_id = cursor.lastrowid
@@ -2072,6 +2085,8 @@ def get_explanation_for_date(explanation_date: str) -> Optional[Dict[str, Any]]:
             result["top_shap_features"] = json.loads(result.get("top_shap_features", "[]"))
             result["sentiment_headlines"] = json.loads(result.get("sentiment_headlines", "[]"))
             result["model_weights"] = json.loads(result.get("model_weights", "{}"))
+            raw_payload = result.get("xai_payload")
+            result["xai_payload"] = json.loads(raw_payload) if raw_payload else None
         return result
     finally:
         conn.close()
@@ -2088,5 +2103,31 @@ def explanation_exists_for_date(explanation_date: str) -> bool:
         )
         result = cursor.fetchone()
         return result is not None
+    finally:
+        conn.close()
+
+
+def update_explanation_xai_payload(explanation_date: str, xai_payload: Dict[str, Any]) -> bool:
+    """
+    Update the xai_payload column for an existing explanation row.
+
+    Returns:
+        True if a row was updated, False if no row matched.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "UPDATE explanations SET xai_payload = ? WHERE explanation_date = ?",
+            (json.dumps(xai_payload), explanation_date),
+        )
+        conn.commit()
+        updated = cursor.rowcount if hasattr(cursor, "rowcount") else 1
+        logger.info(f"Updated xai_payload for date={explanation_date} (rows={updated})")
+        return True
+    except Exception as e:
+        logger.error(f"Error updating xai_payload: {e}")
+        conn.rollback()
+        raise
     finally:
         conn.close()

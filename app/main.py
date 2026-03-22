@@ -1410,7 +1410,13 @@ async def get_explanation(
                 "The daily job runs at 06:00 UTC. Please retry in a few moments.",
             )
 
-        # Format response as dict
+        # Format response — prefer full xai_payload (dashboard-ready) if stored
+        xai_payload = explanation.get("xai_payload")
+        if xai_payload:
+            # New format: full dashboard payload — return directly
+            return xai_payload
+
+        # Legacy format: build from individual DB columns (explanations without xai_payload)
         return {
             "success": True,
             "explanation_date": explanation_date,
@@ -1451,6 +1457,89 @@ async def get_explanation(
         raise
     except Exception as e:
         logger.error(f"Error retrieving explanation: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/explain/regenerate",
+    response_model=None,
+    responses={
+        200: {"description": "Regenerated explanation"},
+        400: {"model": ErrorResponse, "description": "Invalid date"},
+        503: {"model": ErrorResponse, "description": "Prices not available"},
+    },
+)
+async def regenerate_explanation(
+    explanation_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+):
+    """
+    Force-regenerate the xai_payload for a given date (default: today).
+
+    Runs the full XAI pipeline and overwrites the stored xai_payload with
+    the new dashboard-compatible format. Use this to backfill old rows that
+    were computed before the new pipeline was deployed.
+    """
+    from app.database import get_explanation_for_date, get_prices as get_prices_db
+    from app.services.explainability import ExplainabilityService
+    import pandas as pd, time as _time
+
+    if explanation_date is None:
+        explanation_date = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        datetime.strptime(explanation_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Expected YYYY-MM-DD")
+
+    async def _run():
+        import warnings
+        warnings.filterwarnings("ignore")
+        t0 = _time.time()
+        svc = ExplainabilityService()
+
+        # Load prices from DB (bypass stale guard — user explicitly requested regeneration)
+        prices_df = get_prices_db(days=120)
+        prices_df["date"] = pd.to_datetime(prices_df["date"])
+        prices_df = prices_df.sort_values("date").reset_index(drop=True)
+        if prices_df.empty:
+            raise HTTPException(status_code=503, detail="No price data available")
+
+        last_price = float(prices_df["price"].iloc[-1])
+        last_date = prices_df["date"].iloc[-1].strftime("%Y-%m-%d")
+
+        from app.services.prediction import prediction_service
+        forecasts = prediction_service.predict(prices=prices_df)
+        pred = {"last_price": last_price, "last_date": last_date, "forecasts": forecasts}
+
+        ridge_exp = svc._explain_ridge(prices_df)
+        gru_exp   = svc._explain_gru_attention(prices_df)
+        xgb_exp   = svc._explain_xgboost(prices_df)
+        arima_exp = svc._explain_arima(prices_df)
+        sent_exp  = svc._explain_sentiment()
+
+        agg        = svc._aggregate_explanations(arima_exp, ridge_exp, gru_exp, xgb_exp, sent_exp, pred)
+        prompt     = svc._build_explanation_prompt(agg)
+        llm_result = svc._generate_llm_narrative(prompt, agg)
+        xai_payload = svc._build_xai_payload(explanation_date, agg, llm_result)
+
+        # Persist to DB using the proper DB layer function
+        from app.database import update_explanation_xai_payload, explanation_exists_for_date
+        if explanation_exists_for_date(explanation_date):
+            update_explanation_xai_payload(explanation_date, xai_payload)
+        else:
+            explanation_text = llm_result.get("narrative", "")
+            computation_time = _time.time() - t0
+            svc._store_explanation(explanation_date, agg, explanation_text, computation_time, xai_payload)
+
+        xai_payload["computation_time_seconds"] = round(_time.time() - t0, 2)
+        return xai_payload
+
+    try:
+        return await run_in_threadpool(_run)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Explanation regeneration failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
