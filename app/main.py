@@ -39,6 +39,9 @@ from app.config import (
     PREDICTION_LOCK_SCHEDULE_HOUR,
     PREDICTION_LOCK_SCHEDULE_MINUTE,
     PREDICTION_LOCK_SCHEDULE_TIMEZONE,
+    EXPLAINABILITY_SCHEDULE_TIMEZONE,
+    EXPLAINABILITY_SCHEDULE_HOUR,
+    EXPLAINABILITY_SCHEDULE_MINUTE,
     SKIP_FINBERT_PRELOAD,
     SCRAPER_API_KEY,
 )
@@ -59,6 +62,7 @@ from app.services.price_fetcher import (
 from app.services.prediction import prediction_service
 from app.services.prediction_snapshot import (
     current_prediction_date_local,
+    get_required_locked_prediction_snapshot,
     get_locked_prediction_snapshot,
 )
 from app.services.prediction_scheduler import (
@@ -445,6 +449,66 @@ def _sync_latest_prices_cached(lookback_days: int = 120) -> pd.DataFrame:
         _price_sync_cache[lookback_days] = (now_ts, fresh.copy())
 
     return fresh
+
+
+def _regenerate_explanation_payload_for_date(explanation_date: str) -> dict:
+    """Run explainability regeneration aligned to locked prediction snapshot."""
+    from app.database import (
+        explanation_exists_for_date,
+        get_prices as get_prices_db,
+        update_explanation_xai_payload,
+    )
+    from app.services.explainability import ExplainabilityService
+    import warnings
+    import time as _time
+
+    warnings.filterwarnings("ignore")
+    t0 = _time.time()
+    svc = ExplainabilityService()
+
+    prices_df = get_prices_db(days=120)
+    prices_df["date"] = pd.to_datetime(prices_df["date"])
+    prices_df = prices_df.sort_values("date").reset_index(drop=True)
+    if prices_df.empty:
+        raise HTTPException(status_code=503, detail="No price data available")
+
+    snapshot = get_required_locked_prediction_snapshot(prediction_date=explanation_date)
+    last_date = str(snapshot.get("last_price_date") or "")
+    if not last_date:
+        raise HTTPException(status_code=503, detail="Locked prediction missing last_price_date")
+
+    prices_df = prices_df[prices_df["date"] <= pd.to_datetime(last_date)]
+    prices_df = prices_df.sort_values("date").reset_index(drop=True)
+    if prices_df.empty:
+        raise HTTPException(status_code=503, detail="No prices available up to locked last_price_date")
+
+    pred = {
+        "last_price": float(snapshot.get("last_price", prices_df["price"].iloc[-1])),
+        "last_date": last_date,
+        "prediction_date": str(snapshot.get("prediction_date") or explanation_date),
+        "forecasts": snapshot.get("forecasts") or [],
+    }
+
+    ridge_exp = svc._explain_ridge(prices_df)
+    gru_exp = svc._explain_gru_attention(prices_df)
+    xgb_exp = svc._explain_xgboost(prices_df)
+    arima_exp = svc._explain_arima(prices_df)
+    sent_exp = svc._explain_sentiment(article_date=last_date)
+
+    agg = svc._aggregate_explanations(arima_exp, ridge_exp, gru_exp, xgb_exp, sent_exp, pred)
+    prompt = svc._build_explanation_prompt(agg)
+    llm_result = svc._generate_llm_narrative(prompt, agg)
+    xai_payload = svc._build_xai_payload(explanation_date, agg, llm_result)
+
+    if explanation_exists_for_date(explanation_date):
+        update_explanation_xai_payload(explanation_date, xai_payload)
+    else:
+        explanation_text = llm_result.get("narrative", "")
+        computation_time = _time.time() - t0
+        svc._store_explanation(explanation_date, agg, explanation_text, computation_time, xai_payload)
+
+    xai_payload["computation_time_seconds"] = round(_time.time() - t0, 2)
+    return xai_payload
 
 
 def _aggregate_historical_prices(df: pd.DataFrame, granularity: str) -> pd.DataFrame:
@@ -1390,7 +1454,8 @@ async def get_explanation(
     Retrieve stored explainability result for a given date.
 
     If no explanation_date is provided, defaults to today.
-    The explanation is pre-computed once per day at 06:00 UTC and cached in the database.
+    The explanation is pre-computed once per day (schedule controlled by
+    EXPLAINABILITY_SCHEDULE_* env vars) and cached in the database.
     
     If the job hasn't run yet for today, returns 503 with a retry message.
 
@@ -1410,7 +1475,7 @@ async def get_explanation(
         if snapshot and snapshot.get("prediction_date"):
             explanation_date = str(snapshot["prediction_date"])
         else:
-            explanation_date = datetime.now().strftime("%Y-%m-%d")
+            explanation_date = _current_prediction_date_local()
 
     # Validate date format
     try:
@@ -1431,8 +1496,12 @@ async def get_explanation(
             # Explanation hasn't been computed yet
             raise HTTPException(
                 status_code=503,
-                detail=f"Explanation not yet available for {explanation_date}. "
-                "The daily job runs at 06:00 UTC. Please retry in a few moments.",
+                detail=(
+                    f"Explanation not yet available for {explanation_date}. "
+                    f"The daily job runs at {EXPLAINABILITY_SCHEDULE_HOUR:02d}:{EXPLAINABILITY_SCHEDULE_MINUTE:02d} "
+                    f"{EXPLAINABILITY_SCHEDULE_TIMEZONE}. "
+                    "Please retry in a few moments, or POST /explain/regenerate to generate it now."
+                ),
             )
 
         # Format response — prefer full xai_payload (dashboard-ready) if stored
@@ -1505,63 +1574,19 @@ async def regenerate_explanation(
     the new dashboard-compatible format. Use this to backfill old rows that
     were computed before the new pipeline was deployed.
     """
-    from app.database import get_explanation_for_date, get_prices as get_prices_db
-    from app.services.explainability import ExplainabilityService
-    import pandas as pd, time as _time
-
     if explanation_date is None:
-        explanation_date = datetime.now().strftime("%Y-%m-%d")
+        explanation_date = _current_prediction_date_local()
 
     try:
         datetime.strptime(explanation_date, "%Y-%m-%d")
     except ValueError:
         raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
 
-    def _run():
-        import warnings
-        warnings.filterwarnings("ignore")
-        t0 = _time.time()
-        svc = ExplainabilityService()
-
-        # Load prices from DB (bypass stale guard — user explicitly requested regeneration)
-        prices_df = get_prices_db(days=120)
-        prices_df["date"] = pd.to_datetime(prices_df["date"])
-        prices_df = prices_df.sort_values("date").reset_index(drop=True)
-        if prices_df.empty:
-            raise HTTPException(status_code=503, detail="No price data available")
-
-        last_price = float(prices_df["price"].iloc[-1])
-        last_date = prices_df["date"].iloc[-1].strftime("%Y-%m-%d")
-
-        from app.services.prediction import prediction_service
-        forecasts = prediction_service.predict(prices=prices_df)
-        pred = {"last_price": last_price, "last_date": last_date, "forecasts": forecasts}
-
-        ridge_exp = svc._explain_ridge(prices_df)
-        gru_exp   = svc._explain_gru_attention(prices_df)
-        xgb_exp   = svc._explain_xgboost(prices_df)
-        arima_exp = svc._explain_arima(prices_df)
-        sent_exp  = svc._explain_sentiment()
-
-        agg        = svc._aggregate_explanations(arima_exp, ridge_exp, gru_exp, xgb_exp, sent_exp, pred)
-        prompt     = svc._build_explanation_prompt(agg)
-        llm_result = svc._generate_llm_narrative(prompt, agg)
-        xai_payload = svc._build_xai_payload(explanation_date, agg, llm_result)
-
-        # Persist to DB using the proper DB layer function
-        from app.database import update_explanation_xai_payload, explanation_exists_for_date
-        if explanation_exists_for_date(explanation_date):
-            update_explanation_xai_payload(explanation_date, xai_payload)
-        else:
-            explanation_text = llm_result.get("narrative", "")
-            computation_time = _time.time() - t0
-            svc._store_explanation(explanation_date, agg, explanation_text, computation_time, xai_payload)
-
-        xai_payload["computation_time_seconds"] = round(_time.time() - t0, 2)
-        return xai_payload
-
     try:
-        return await run_in_threadpool(_run)
+        return await run_in_threadpool(
+            _regenerate_explanation_payload_for_date,
+            explanation_date,
+        )
     except HTTPException:
         raise
     except Exception as e:

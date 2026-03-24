@@ -17,7 +17,7 @@ import pandas as pd
 import torch
 import json
 import logging
-from datetime import datetime, date
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import os
@@ -109,17 +109,17 @@ class ExplainabilityService:
             logger.info("Phi-3-mini LLM loaded successfully")
         return self._llm_pipeline
 
-    def _validate_todays_prices_available(self, target_date: str) -> bool:
+    def _validate_prices_available_for_prediction_date(self, prediction_date: str) -> bool:
         """
-        Verify that today's prices (or yesterday's if after-hours) are in the database.
+        Verify that price data is fresh enough for the canonical prediction date.
 
         This prevents the daily job from running on stale/incomplete data.
 
         Args:
-            target_date: Date string (YYYY-MM-DD) to check for.
+            prediction_date: Canonical prediction date key (YYYY-MM-DD).
 
         Returns:
-            True if prices for today/yesterday available, False otherwise.
+            True if prices are fresh enough for the prediction date, False otherwise.
         """
         try:
             from app.database import get_prices as get_prices_db
@@ -133,25 +133,34 @@ class ExplainabilityService:
 
             latest_price_date_str = prices_df["date"].iloc[-1]
             latest_price_date = pd.to_datetime(latest_price_date_str).date()
-            target_date_obj = datetime.strptime(target_date, "%Y-%m-%d").date()
+            prediction_date_obj = datetime.strptime(prediction_date, "%Y-%m-%d").date()
 
-            # Market hours: Brent trades ~20h/day, so check if today or yesterday
-            days_behind = (target_date_obj - latest_price_date).days
+            # Canonical prediction date may advance only after stable close cutoff.
+            # Allow data to be at most 1 day behind the prediction key.
+            days_behind = (prediction_date_obj - latest_price_date).days
 
             if days_behind == 0:
-                logger.info(f"✓ Today's prices available ({latest_price_date})")
+                logger.info(
+                    "✓ Prices aligned for prediction_date=%s (latest=%s)",
+                    prediction_date,
+                    latest_price_date,
+                )
                 return True
 
             if days_behind == 1:
                 logger.info(
-                    f"⚠ Only yesterday's prices available ({latest_price_date}). "
-                    f"This is OK for end-of-day run, but price update may be pending."
+                    "⚠ Prices are 1 day behind prediction_date=%s (latest=%s). "
+                    "Still acceptable for stable-close workflow.",
+                    prediction_date,
+                    latest_price_date,
                 )
                 return True
 
             logger.error(
-                f"✗ Prices are {days_behind} days old ({latest_price_date}). "
-                f"Today is {target_date_obj}. Data too stale."
+                "✗ Prices are %s days behind prediction_date=%s (latest=%s). Data too stale.",
+                days_behind,
+                prediction_date,
+                latest_price_date,
             )
             return False
 
@@ -167,23 +176,23 @@ class ExplainabilityService:
             Dict with explanation results and metadata.
         """
         job_start = time.time()
-        today = date.today().strftime("%Y-%m-%d")
-        explanation_date = today
+        prediction_key = current_prediction_date_local()
+        explanation_date = prediction_key
 
-        logger.info(f"Starting daily explainability job for {today}")
+        logger.info("Starting daily explainability job for prediction_key=%s", prediction_key)
 
         # Step 0b: Validate that today's prices are available (critical check)
         try:
-            prices_available = self._validate_todays_prices_available(today)
+            prices_available = self._validate_prices_available_for_prediction_date(prediction_key)
             if not prices_available:
                 logger.warning(
-                    f"Today's prices not yet available for {today}. "
-                    "Deferring explainability job for later retry."
+                    "Prices not ready for canonical prediction key %s. Deferring explainability job.",
+                    prediction_key,
                 )
                 return {
                     "status": "deferred",
-                    "reason": "todays_prices_not_available",
-                    "date": today,
+                    "reason": "prices_not_available_for_prediction_key",
+                    "date": prediction_key,
                 }
         except Exception as e:
             logger.error(f"Failed to validate prices availability: {e}")
@@ -193,7 +202,7 @@ class ExplainabilityService:
             # Step 1: Generate prediction and fetch data
             logger.info("Step 1: Generating prediction...")
             prediction_result, prices_df, _ = self._fetch_prediction_data()
-            explanation_date = str(prediction_result.get("prediction_date") or today)
+            explanation_date = str(prediction_result.get("prediction_date") or prediction_key)
 
             # Step 1b: Skip if explanation already exists for this prediction snapshot date
             from app.database import explanation_exists_for_date
@@ -226,7 +235,9 @@ class ExplainabilityService:
 
             # Step 6: Sentiment explainability
             logger.info("Step 6: Analyzing sentiment headlines...")
-            sentiment_explanation = self._explain_sentiment()
+            sentiment_explanation = self._explain_sentiment(
+                article_date=str(prediction_result.get("last_date") or prediction_key)
+            )
 
             # Step 7: Ensemble aggregation
             logger.info("Step 7: Aggregating ensemble explanations...")
@@ -310,16 +321,20 @@ class ExplainabilityService:
         latest_prices["date"] = pd.to_datetime(latest_prices["date"])
         latest_prices = latest_prices.sort_values("date").reset_index(drop=True)
 
-        # CRITICAL VALIDATION: Ensure last price is from today or very recent
+        prediction_key = current_prediction_date_local()
+        prediction_date_obj = datetime.strptime(prediction_key, "%Y-%m-%d").date()
+
+        # CRITICAL VALIDATION: Ensure latest price is fresh for canonical prediction date
         last_price_date = pd.to_datetime(latest_prices["date"].iloc[-1]).date()
-        today = date.today()
-        days_behind = (today - last_price_date).days
+        days_behind = (prediction_date_obj - last_price_date).days
 
         if days_behind > 1:
             logger.warning(
-                f"Last price date is {days_behind} days old ({last_price_date}), "
-                f"but today is {today}. This suggests stale/incomplete data. "
-                f"Aborting explainability computation to prevent incorrect explanations."
+                "Last price date is %s days behind prediction_key=%s (latest=%s). "
+                "Aborting explainability computation to prevent stale explanations.",
+                days_behind,
+                prediction_key,
+                last_price_date,
             )
             raise ValueError(
                 f"Price data is too stale ({days_behind} days old). "
@@ -328,16 +343,22 @@ class ExplainabilityService:
 
         if days_behind == 1:
             logger.info(
-                f"Last price date is yesterday ({last_price_date}), which is acceptable "
-                f"for end-of-day explanations. Proceeding with computation."
+                "Last price date is 1 day behind prediction_key=%s (latest=%s). Proceeding.",
+                prediction_key,
+                last_price_date,
             )
-
-        close_date = pd.to_datetime(latest_prices["date"].iloc[-1]).strftime("%Y-%m-%d")
 
         # Use the same locked forecast source as `/predict` to keep values consistent.
         snapshot = get_required_locked_prediction_snapshot(
-            prediction_date=current_prediction_date_local()
+            prediction_date=prediction_key
         )
+
+        snapshot_last_date = str(snapshot["last_price_date"])
+        if last_price_date < datetime.strptime(snapshot_last_date, "%Y-%m-%d").date():
+            raise ValueError(
+                "Price table is behind locked prediction reference date. "
+                f"latest_price_date={last_price_date}, snapshot_last_price_date={snapshot_last_date}"
+            )
 
         prediction_result = {
             "last_price": float(snapshot["last_price"]),
@@ -345,17 +366,6 @@ class ExplainabilityService:
             "prediction_date": str(snapshot.get("prediction_date") or ""),
             "forecasts": snapshot["forecasts"],
         }
-
-        # VALIDATION: Ensure prediction is recent (not yesterday when it's a new day)
-        if days_behind == 0 or (days_behind == 1 and pd.Timestamp.now().hour < 12):
-            logger.info(
-                f"Prediction is aligned with today's data ({close_date}). Proceeding."
-            )
-        else:
-            logger.warning(
-                f"Prediction is for {close_date}, which is behind current date. "
-                "Explanations may reflect outdated market conditions."
-            )
 
         # Fetch sentiment
         sentiment_df = get_sentiment_history(days=LOOKBACK)
@@ -858,7 +868,7 @@ class ExplainabilityService:
             logger.debug(f"Error with LIME on article: {e}")
             return None
 
-    def _explain_sentiment(self) -> Dict[str, Any]:
+    def _explain_sentiment(self, article_date: Optional[str] = None) -> Dict[str, Any]:
         """
         Analyze top 3 sentiment headlines using LIME.
 
@@ -872,12 +882,12 @@ class ExplainabilityService:
         try:
             from app.services.finbert_analyzer import analyze_sentiment
 
-            # Get latest headlines
-            today = date.today()
-            articles = get_news_articles(today.strftime("%Y-%m-%d"))
+            # Use the same market reference date as locked prediction.
+            target_article_date = article_date or current_prediction_date_local()
+            articles = get_news_articles(target_article_date)
 
             if not articles:
-                logger.info("No articles found for today")
+                logger.info("No articles found for %s", target_article_date)
                 return {"top_headlines": [], "method": "no_data"}
 
             # Sort by sentiment magnitude

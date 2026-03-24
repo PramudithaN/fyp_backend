@@ -1,7 +1,7 @@
 """
 Daily explainability job scheduler using APScheduler.
 
-Runs the explainability pipeline once per day at 06:00 UTC.
+Runs the explainability pipeline once per day after the prediction lock job.
 Integrates with FastAPI lifespan to start/stop scheduler with app.
 """
 
@@ -9,6 +9,14 @@ import logging
 from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+from app.config import (
+    EXPLAINABILITY_SCHEDULE_TIMEZONE,
+    EXPLAINABILITY_SCHEDULE_HOUR,
+    EXPLAINABILITY_SCHEDULE_MINUTE,
+    EXPLAINABILITY_SCHEDULE_RETRY_HOUR,
+    EXPLAINABILITY_SCHEDULE_RETRY_MINUTE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,19 +43,27 @@ def init_scheduler() -> AsyncIOScheduler:
 
     _scheduler = AsyncIOScheduler()
 
-    # Primary job: Daily explainability at 06:00 UTC
+    # Primary job: Daily explainability pipeline (runs after prediction lock job)
     _scheduler.add_job(
         run_daily_explainability_job,
-        CronTrigger(hour=6, minute=0),
+        CronTrigger(
+            hour=EXPLAINABILITY_SCHEDULE_HOUR,
+            minute=EXPLAINABILITY_SCHEDULE_MINUTE,
+            timezone=EXPLAINABILITY_SCHEDULE_TIMEZONE,
+        ),
         id="daily_explainability",
         name="Daily Explainability Pipeline (Primary)",
         replace_existing=True,
     )
 
-    # Retry job: If prices delayed, retry at 08:00 UTC
+    # Retry job: If prices or locked prediction not yet ready, retry later
     _scheduler.add_job(
         run_daily_explainability_job,
-        CronTrigger(hour=8, minute=0),
+        CronTrigger(
+            hour=EXPLAINABILITY_SCHEDULE_RETRY_HOUR,
+            minute=EXPLAINABILITY_SCHEDULE_RETRY_MINUTE,
+            timezone=EXPLAINABILITY_SCHEDULE_TIMEZONE,
+        ),
         id="daily_explainability_retry",
         name="Daily Explainability Pipeline (Retry)",
         replace_existing=True,
@@ -56,8 +72,14 @@ def init_scheduler() -> AsyncIOScheduler:
     _scheduler.start()
     logger.info(
         "APScheduler started with daily explainability jobs:"
-        "\n  - Primary: 06:00 UTC"
-        "\n  - Retry: 08:00 UTC (if prices delayed)"
+        "\n  - Primary: %02d:%02d %s"
+        "\n  - Retry:   %02d:%02d %s (if prices/prediction delayed)",
+        EXPLAINABILITY_SCHEDULE_HOUR,
+        EXPLAINABILITY_SCHEDULE_MINUTE,
+        EXPLAINABILITY_SCHEDULE_TIMEZONE,
+        EXPLAINABILITY_SCHEDULE_RETRY_HOUR,
+        EXPLAINABILITY_SCHEDULE_RETRY_MINUTE,
+        EXPLAINABILITY_SCHEDULE_TIMEZONE,
     )
 
     return _scheduler
@@ -82,8 +104,8 @@ def run_daily_explainability_job() -> None:
     Execute the daily explainability pipeline.
 
     This is the job function scheduled by APScheduler.
-    Runs at 06:00 UTC daily.
-    
+    Scheduled time is controlled by EXPLAINABILITY_SCHEDULE_* env vars.
+
     If prices aren't available yet, logs a warning and defers.
     Subsequent retries can happen via manual trigger or scheduler.
     """
