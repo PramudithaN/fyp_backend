@@ -5,7 +5,7 @@ Price fetcher service - fetches Brent oil prices from Yahoo Finance.
 import yfinance as yf
 import pandas as pd
 import os
-from datetime import datetime, timedelta, UTC, time
+from datetime import datetime, timedelta, UTC, time, date
 from typing import Optional, Dict, Any, Literal
 import logging
 from threading import RLock
@@ -55,6 +55,38 @@ def get_regular_session_window() -> Optional[Dict[str, Any]]:
     except Exception as exc:
         logger.warning("Failed to read Yahoo regular trading window: %s", exc)
         return None
+
+
+def get_canonical_prediction_date(
+    *,
+    target_timezone: str,
+    close_lock_buffer_minutes: int,
+    now_target: Optional[datetime] = None,
+) -> str:
+    """
+    Resolve a stable daily prediction key in the target timezone.
+
+    The key advances only after Yahoo's regular session end + buffer has passed
+    when converted into the target timezone.
+    """
+    target_tz = ZoneInfo(target_timezone)
+    target_now = now_target.astimezone(target_tz) if now_target is not None else datetime.now(target_tz)
+
+    session = get_regular_session_window()
+    if not session:
+        return target_now.strftime("%Y-%m-%d")
+
+    regular_end = session["regular_end"]
+    stable_after_exchange = regular_end + timedelta(minutes=max(0, int(close_lock_buffer_minutes)))
+    stable_after_target = stable_after_exchange.astimezone(target_tz)
+    session_date_target: date = regular_end.astimezone(target_tz).date()
+
+    if target_now < stable_after_target:
+        prediction_date = session_date_target - timedelta(days=1)
+    else:
+        prediction_date = session_date_target
+
+    return prediction_date.strftime("%Y-%m-%d")
 
 
 def _get_chart_result(chart_payload: Dict[str, Any]) -> Dict[str, Any]:

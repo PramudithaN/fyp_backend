@@ -21,7 +21,11 @@ from app.config import (
 )
 from app.database import upsert_daily_prediction
 from app.services.prediction import prediction_service
-from app.services.price_fetcher import fetch_latest_prices, get_regular_session_window
+from app.services.price_fetcher import (
+    fetch_latest_prices,
+    get_regular_session_window,
+    get_canonical_prediction_date,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +121,11 @@ def run_daily_prediction_job(now_local: datetime | None = None) -> dict:
     """
     tz = ZoneInfo(PREDICTION_LOCK_SCHEDULE_TIMEZONE)
     local_now = now_local.astimezone(tz) if now_local is not None else datetime.now(tz)
-    prediction_date = local_now.strftime("%Y-%m-%d")
+    prediction_date = get_canonical_prediction_date(
+        target_timezone=PREDICTION_LOCK_SCHEDULE_TIMEZONE,
+        close_lock_buffer_minutes=PREDICTION_CLOSE_LOCK_BUFFER_MINUTES,
+        now_target=local_now,
+    )
 
     logger.info("Daily locked prediction job started for prediction_date=%s", prediction_date)
 

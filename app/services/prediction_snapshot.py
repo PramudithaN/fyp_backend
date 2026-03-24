@@ -11,8 +11,12 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
-from app.config import PREDICTION_LOCK_SCHEDULE_TIMEZONE
+from app.config import (
+    PREDICTION_CLOSE_LOCK_BUFFER_MINUTES,
+    PREDICTION_LOCK_SCHEDULE_TIMEZONE,
+)
 from app.database import get_latest_locked_prediction, get_prediction_for_date
+from app.services.price_fetcher import get_canonical_prediction_date
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +26,13 @@ class LockedPredictionUnavailableError(RuntimeError):
 
 
 def current_prediction_date_local() -> str:
-    """Return the prediction date key in the configured scheduler timezone."""
+    """Return canonical prediction key in configured timezone using Yahoo close cutoff."""
     tz = ZoneInfo(PREDICTION_LOCK_SCHEDULE_TIMEZONE)
-    return datetime.now(tz).strftime("%Y-%m-%d")
+    return get_canonical_prediction_date(
+        target_timezone=PREDICTION_LOCK_SCHEDULE_TIMEZONE,
+        close_lock_buffer_minutes=PREDICTION_CLOSE_LOCK_BUFFER_MINUTES,
+        now_target=datetime.now(tz),
+    )
 
 
 def _normalize_locked_record(record: Dict[str, Any], source: str) -> Dict[str, Any]:
