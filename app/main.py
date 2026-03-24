@@ -382,6 +382,20 @@ def _prediction_response_from_record(record: dict, market: dict) -> PredictionRe
     )
 
 
+def _is_locked_snapshot_stale(snapshot: dict, today_key: str, max_days_behind: int = 3) -> bool:
+    """Return True when locked snapshot appears too old for safe serving."""
+    try:
+        last_price_date_raw = snapshot.get("last_price_date")
+        if not last_price_date_raw:
+            return True
+
+        today_date = pd.to_datetime(today_key).date()
+        last_price_date = pd.to_datetime(str(last_price_date_raw)).date()
+        return (today_date - last_price_date).days > max_days_behind
+    except Exception:
+        return True
+
+
 def _sync_latest_prices(lookback_days: int = 120) -> pd.DataFrame:
     """Fetch the latest available market prices and upsert them into the database."""
     from app.database import add_bulk_prices, get_prices as get_prices_db
@@ -863,10 +877,9 @@ async def predict_now():
     """
     Return the locked daily forecast from database.
 
-    Request path is read-only:
-    - Does not fetch Yahoo prices
-    - Does not run model inference
-    - Does not write new prediction rows
+    Normal path is read-only. As a resiliency fallback, when today's locked row
+    is missing (or clearly stale), this endpoint triggers an immediate lock job
+    and retries once before returning.
 
     Selection logic:
     1. Try today's locked prediction_date in scheduler timezone.
@@ -882,13 +895,34 @@ async def predict_now():
         today_key = _current_prediction_date_local()
         snapshot = await run_in_threadpool(get_locked_prediction_snapshot, today_key)
 
-        if snapshot:
+        needs_refresh = (
+            snapshot is None
+            or snapshot.get("source") != "locked_for_date"
+            or _is_locked_snapshot_stale(snapshot, today_key)
+        )
+
+        if needs_refresh:
+            logger.info(
+                "Locked snapshot missing/stale for %s (source=%s). Triggering immediate lock refresh.",
+                today_key,
+                snapshot.get("source") if snapshot else "none",
+            )
+            refresh_result = await run_in_threadpool(trigger_prediction_job_now)
+            if refresh_result.get("status") != "success":
+                logger.warning(
+                    "Immediate lock refresh did not succeed: %s",
+                    refresh_result,
+                )
+
+            snapshot = await run_in_threadpool(get_locked_prediction_snapshot, today_key)
+
+        if snapshot and not _is_locked_snapshot_stale(snapshot, today_key):
             return _prediction_response_from_record(snapshot, market)
 
         raise HTTPException(
             status_code=503,
             detail=(
-                "No locked daily forecast available yet. "
+                "No fresh locked daily forecast is available yet. "
                 "Wait for the scheduled prediction job or trigger it manually."
             ),
         )

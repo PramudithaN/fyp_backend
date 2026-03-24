@@ -51,9 +51,10 @@ Configure the application using environment variables (create a `.env` file):
 | `PREDICTION_PRECOMPUTE_ENABLED` | `true` | Enables background forecast refresh so `/predict` can return warm cached responses |
 | `PREDICTION_PRECOMPUTE_INTERVAL_SECONDS` | `900` | Background precompute interval in seconds (default 15 minutes) |
 | `PREDICTION_LOCK_SCHEDULE_ENABLED` | `true` | Enables daily locked prediction scheduler |
-| `PREDICTION_LOCK_SCHEDULE_HOUR` | `17` | Daily lock job hour (scheduler timezone) |
+| `PREDICTION_LOCK_SCHEDULE_HOUR` | `0` | Daily lock job hour (scheduler timezone) |
 | `PREDICTION_LOCK_SCHEDULE_MINUTE` | `30` | Daily lock job minute (scheduler timezone) |
 | `PREDICTION_LOCK_SCHEDULE_TIMEZONE` | `America/New_York` | Timezone used for daily lock schedule |
+| `PREDICTION_CLOSE_LOCK_BUFFER_MINUTES` | `20` | Minutes to wait after Yahoo regular session end before treating close as stable |
 | `HF_SPACE_TARGET` | - | Hugging Face Space host used by local Prometheus scraper (e.g., `your-space.hf.space`) |
 | `GRAFANA_REMOTE_WRITE_URL` | - | Grafana Cloud Prometheus remote-write endpoint |
 | `GRAFANA_METRICS_USER_ID` | - | Grafana Cloud metrics username |
@@ -65,6 +66,11 @@ NEWSAPI_KEY=your_api_key_here
 NEWSDATA_KEY=your_api_key_here
 SENTIMENT_MODE=finbert
 SKIP_FINBERT_PRELOAD=false
+PREDICTION_LOCK_SCHEDULE_ENABLED=true
+PREDICTION_LOCK_SCHEDULE_TIMEZONE=America/New_York
+PREDICTION_LOCK_SCHEDULE_HOUR=0
+PREDICTION_LOCK_SCHEDULE_MINUTE=30
+PREDICTION_CLOSE_LOCK_BUFFER_MINUTES=20
 ```
 
 ### FinBERT Model Loading
@@ -111,8 +117,9 @@ curl "http://localhost:8000/predictions/compare?start_date=2025-01-01&end_date=2
 
 The backend now uses a lock-once-per-day workflow:
 
-1. At 5:30 PM ET (configurable), a scheduler job runs once.
-2. It fetches historical prices and selects the previous trading day's official close.
+1. At 12:30 AM ET (configurable), a scheduler job runs once.
+2. It fetches historical prices and selects a stable close using Yahoo session timing.
+  Before market close + buffer it uses the previous trading close; after close + buffer it can use the same-day close.
 3. The model generates forecast output and stores one locked row for that `prediction_date`.
 4. All daytime `/predict` requests read from the database record only (no model rerun).
 

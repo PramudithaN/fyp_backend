@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any, Literal
 import logging
 from threading import RLock
 from time import monotonic
+from zoneinfo import ZoneInfo
 
 from app.config import BRENT_TICKER
 
@@ -23,6 +24,37 @@ _prices_cache_lock = RLock()
 _prices_cache: Dict[tuple[int, str], tuple[float, pd.DataFrame]] = {}
 _snapshot_cache_lock = RLock()
 _snapshot_cache: Optional[tuple[float, Dict[str, Any]]] = None
+
+
+def get_regular_session_window() -> Optional[Dict[str, Any]]:
+    """
+    Read Yahoo Finance metadata for the current regular trading period.
+
+    Returns:
+        Dict with exchange timezone and regular session start/end datetimes,
+        or None if Yahoo metadata is unavailable.
+    """
+    try:
+        ticker = yf.Ticker(BRENT_TICKER)
+        meta = ticker.history_metadata or {}
+
+        exchange_tz_name = meta.get("exchangeTimezoneName")
+        regular = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
+        start_epoch = regular.get("start")
+        end_epoch = regular.get("end")
+
+        if not exchange_tz_name or not start_epoch or not end_epoch:
+            return None
+
+        exchange_tz = ZoneInfo(exchange_tz_name)
+        return {
+            "exchange_timezone": exchange_tz_name,
+            "regular_start": datetime.fromtimestamp(int(start_epoch), exchange_tz),
+            "regular_end": datetime.fromtimestamp(int(end_epoch), exchange_tz),
+        }
+    except Exception as exc:
+        logger.warning("Failed to read Yahoo regular trading window: %s", exc)
+        return None
 
 
 def _get_chart_result(chart_payload: Dict[str, Any]) -> Dict[str, Any]:
