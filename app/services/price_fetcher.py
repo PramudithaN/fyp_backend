@@ -5,7 +5,7 @@ Price fetcher service - fetches Brent oil prices from Yahoo Finance.
 import yfinance as yf
 import pandas as pd
 import os
-from datetime import datetime, timedelta, UTC, time, date
+from datetime import datetime, timedelta, timezone, time, date
 from typing import Optional, Dict, Any, Literal
 import logging
 from threading import RLock
@@ -15,6 +15,9 @@ from zoneinfo import ZoneInfo
 from app.config import BRENT_TICKER
 
 logger = logging.getLogger(__name__)
+
+# Python 3.10 compatibility: datetime.UTC is unavailable before 3.11.
+UTC = timezone.utc
 
 _LATEST_PRICES_CACHE_TTL_SECONDS = 120.0
 _LIVE_SNAPSHOT_CACHE_TTL_SECONDS = 20.0

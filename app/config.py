@@ -87,6 +87,10 @@ SENTIMENT_MODE = os.getenv("SENTIMENT_MODE", "finbert")
 # Skip FinBERT preloading (useful for deployments without HuggingFace access)
 SKIP_FINBERT_PRELOAD = os.getenv("SKIP_FINBERT_PRELOAD", "false").lower() == "true"
 
+# Hugging Face model revision pin for secure/reproducible from_pretrained downloads.
+# Prefer a commit SHA in production; defaults to "main" for compatibility.
+FINBERT_MODEL_REVISION = os.getenv("FINBERT_MODEL_REVISION", "main")
+
 # Prediction API performance controls
 PREDICT_CACHE_TTL_SECONDS = float(os.getenv("PREDICT_CACHE_TTL_SECONDS", "45"))
 PREDICTION_PRECOMPUTE_ENABLED = (

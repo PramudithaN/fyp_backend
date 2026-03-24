@@ -19,6 +19,8 @@ from typing import List, Optional
 from pathlib import Path
 import torch
 
+from app.config import FINBERT_MODEL_REVISION
+
 logger = logging.getLogger(__name__)
 
 # Global model cache (loaded once, reused)
@@ -51,10 +53,15 @@ def load_sentiment_model():
 
         logger.info("Downloading model from Hugging Face (this may take a few minutes on first run)...")
         
-        # Load FinBERT without pinning to a specific revision.
-        # The previously pinned revision was deleted from HuggingFace.
-        _tokenizer = AutoTokenizer.from_pretrained(model_name)
-        _model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        # Always pass an explicit revision for safer/reproducible model loads.
+        _tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            revision=FINBERT_MODEL_REVISION,
+        )
+        _model = AutoModelForSequenceClassification.from_pretrained(
+            model_name,
+            revision=FINBERT_MODEL_REVISION,
+        )
 
         # Use GPU if available
         _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
