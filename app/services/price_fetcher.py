@@ -73,14 +73,20 @@ def get_canonical_prediction_date(
     when converted into the target timezone.
     """
     target_tz = ZoneInfo(target_timezone)
-    target_now = now_target.astimezone(target_tz) if now_target is not None else datetime.now(target_tz)
+    target_now = (
+        now_target.astimezone(target_tz)
+        if now_target is not None
+        else datetime.now(target_tz)
+    )
 
     session = get_regular_session_window()
     if not session:
         return target_now.strftime("%Y-%m-%d")
 
     regular_end = session["regular_end"]
-    stable_after_exchange = regular_end + timedelta(minutes=max(0, int(close_lock_buffer_minutes)))
+    stable_after_exchange = regular_end + timedelta(
+        minutes=max(0, int(close_lock_buffer_minutes))
+    )
     stable_after_target = stable_after_exchange.astimezone(target_tz)
     session_date_target: date = regular_end.astimezone(target_tz).date()
 
@@ -207,7 +213,10 @@ def _get_cached_snapshot() -> Optional[Dict[str, Any]]:
 
     now_ts = monotonic()
     with _snapshot_cache_lock:
-        if _snapshot_cache and (now_ts - _snapshot_cache[0]) < _LIVE_SNAPSHOT_CACHE_TTL_SECONDS:
+        if (
+            _snapshot_cache
+            and (now_ts - _snapshot_cache[0]) < _LIVE_SNAPSHOT_CACHE_TTL_SECONDS
+        ):
             return _snapshot_cache[1].copy()
     return None
 
@@ -240,11 +249,15 @@ def _build_intraday_snapshot(intraday: pd.DataFrame) -> Optional[Dict[str, Any]]
     }
 
 
-def _build_fast_info_snapshot(fast_info: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def _build_fast_info_snapshot(
+    fast_info: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
     if not fast_info:
         return None
 
-    fallback_price = fast_info.get("lastPrice") or fast_info.get("regularMarketPreviousClose")
+    fallback_price = fast_info.get("lastPrice") or fast_info.get(
+        "regularMarketPreviousClose"
+    )
     if not fallback_price:
         return None
 
@@ -374,14 +387,14 @@ def get_market_status(now_utc: Optional[datetime] = None) -> dict:
         # Fetch real-time market status from Yahoo Finance
         ticker = yf.Ticker(BRENT_TICKER)
         info = ticker.info
-        
+
         market_state_api = info.get("marketState", "UNKNOWN")
         exchange_tz = info.get("exchangeTimezoneName", "UTC")
-        
+
         # marketState can be: REGULAR, PRE, POST, CLOSED, etc.
         # Treat REGULAR as market open, everything else as closed
         is_open = market_state_api == "REGULAR"
-        
+
         # Brent Oil (ICE) typical hours: 02:00-22:00 UTC (almost 24/5 trading)
         # with ~2 hour break early morning UTC
         return {
@@ -393,8 +406,10 @@ def get_market_status(now_utc: Optional[datetime] = None) -> dict:
             "timezone_info": f"Exchange timezone: {exchange_tz}",
         }
     except Exception as e:
-        logger.warning(f"Failed to fetch market status from Yahoo Finance: {e}. Using fallback logic.")
-        
+        logger.warning(
+            f"Failed to fetch market status from Yahoo Finance: {e}. Using fallback logic."
+        )
+
         # Fallback: Use deterministic trading hours if API fails
         if now_utc is None:
             now_utc = datetime.now(UTC)
@@ -402,12 +417,12 @@ def get_market_status(now_utc: Optional[datetime] = None) -> dict:
             now_utc = now_utc.replace(tzinfo=UTC)
         else:
             now_utc = now_utc.astimezone(UTC)
-        
+
         is_trading_day = now_utc.weekday() < 5
         market_open_utc = time(2, 0)
         market_close_utc = time(22, 0)
         is_within_market_hours = market_open_utc <= now_utc.time() < market_close_utc
-        
+
         if is_trading_day and is_within_market_hours:
             return {
                 "is_open": True,
@@ -417,7 +432,7 @@ def get_market_status(now_utc: Optional[datetime] = None) -> dict:
                 "market_close_time": MARKET_CLOSE_TIME_UTC,
                 "timezone_info": "UTC (Brent Oil - ICE) - FALLBACK MODE",
             }
-        
+
         return {
             "is_open": False,
             "market_state": "CLOSED",
@@ -426,7 +441,6 @@ def get_market_status(now_utc: Optional[datetime] = None) -> dict:
             "market_close_time": MARKET_CLOSE_TIME_UTC,
             "timezone_info": "UTC (Brent Oil - ICE) - FALLBACK MODE",
         }
-
 
 
 def validate_price_data(prices: pd.DataFrame, min_days: int = 30) -> bool:

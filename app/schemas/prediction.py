@@ -8,7 +8,6 @@ from datetime import datetime
 
 from app.models.model_loader import model_artifacts
 
-
 DATE_FMT_DESC = "Date in YYYY-MM-DD format"
 IS_MARKET_OPEN_DESC = "Whether the oil market is currently open"
 MARKET_OPEN_TIME_DESC = "Market open time (via Yahoo Finance market status)"
@@ -36,7 +35,8 @@ class PredictionRequest(BaseModel):
     """Request body for manual prediction endpoint."""
 
     prices: List[PriceInput] = Field(
-        ..., description="List of price data points covering at least the model lookback window"
+        ...,
+        description="List of price data points covering at least the model lookback window",
     )
 
     @field_validator("prices")
@@ -56,7 +56,9 @@ class ForecastDay(BaseModel):
     date: str = Field(..., description="Forecast date")
     forecasted_price: float = Field(..., description="Predicted price (USD)")
     forecasted_return: float = Field(..., description="Predicted log return")
-    horizon: int = Field(..., ge=1, description="Forecast step index for the active model horizon")
+    horizon: int = Field(
+        ..., ge=1, description="Forecast step index for the active model horizon"
+    )
 
     @field_validator("horizon")
     @classmethod
@@ -76,7 +78,9 @@ class PredictionResponse(BaseModel):
     data_source: str = Field(..., description="Source of price data")
     last_price_date: str = Field(..., description="Date of last known price")
     last_price: float = Field(..., description="Last known price (USD)")
-    forecasts: List[ForecastDay] = Field(..., description="Multi-step price forecasts for the active model horizon")
+    forecasts: List[ForecastDay] = Field(
+        ..., description="Multi-step price forecasts for the active model horizon"
+    )
     is_market_open: bool = Field(..., description=IS_MARKET_OPEN_DESC)
     market_open_time: str = Field(..., description=MARKET_OPEN_TIME_DESC)
     market_close_time: str = Field(..., description=MARKET_CLOSE_TIME_DESC)
@@ -129,7 +133,9 @@ class UploadPredictionResponse(BaseModel):
     data_source: str = Field(..., description="Composed data source description")
     last_price_date: str = Field(..., description="Date of last known price")
     last_price: float = Field(..., description="Last known price (USD)")
-    forecasts: List[ForecastDay] = Field(..., description="Multi-step price forecasts for the active model horizon")
+    forecasts: List[ForecastDay] = Field(
+        ..., description="Multi-step price forecasts for the active model horizon"
+    )
     is_market_open: bool = Field(..., description=IS_MARKET_OPEN_DESC)
     market_open_time: str = Field(..., description=MARKET_OPEN_TIME_DESC)
     market_close_time: str = Field(..., description=MARKET_CLOSE_TIME_DESC)
@@ -158,8 +164,12 @@ class NewsArticle(BaseModel):
     url: Optional[str] = Field(None, description="Canonical article URL")
     image_url: Optional[str] = Field(None, description="Article image URL")
     source: Optional[str] = Field(None, description="News source name")
-    published_at: Optional[str] = Field(None, description="Original publication timestamp")
-    sentiment_score: Optional[float] = Field(None, description="Per-article sentiment score")
+    published_at: Optional[str] = Field(
+        None, description="Original publication timestamp"
+    )
+    sentiment_score: Optional[float] = Field(
+        None, description="Per-article sentiment score"
+    )
     created_at: Optional[str] = Field(None, description="Database insertion timestamp")
 
 
@@ -168,9 +178,13 @@ class NewsArticlesResponse(BaseModel):
 
     success: bool
     total_records: int
-    requested_date: Optional[str] = Field(None, description="Exact article date requested")
+    requested_date: Optional[str] = Field(
+        None, description="Exact article date requested"
+    )
     days: int = Field(..., ge=1, description="Number of recent distinct days searched")
-    latest_article_date: Optional[str] = Field(None, description="Latest article date in response")
+    latest_article_date: Optional[str] = Field(
+        None, description="Latest article date in response"
+    )
     articles: List[NewsArticle]
 
 
@@ -297,7 +311,9 @@ class FanChartPoint(BaseModel):
     """Single forecast point with fan chart quantile bands."""
 
     date: str = Field(..., description="Forecast date")
-    horizon: int = Field(..., ge=1, description="Forecast step index for the active model horizon")
+    horizon: int = Field(
+        ..., ge=1, description="Forecast step index for the active model horizon"
+    )
     point_forecast: float = Field(..., description="Point forecast price (USD)")
 
     @field_validator("horizon")
@@ -309,6 +325,7 @@ class FanChartPoint(BaseModel):
                 f"Horizon must be between 1 and {max_horizon} for the active model"
             )
         return horizon
+
     p10: float = Field(..., description="10th percentile forecast price (USD)")
     p25: float = Field(..., description="25th percentile forecast price (USD)")
     p50: float = Field(..., description="50th percentile forecast price (USD)")
@@ -323,7 +340,9 @@ class PredictionFanResponse(BaseModel):
     success: bool = Field(..., description="Whether fan chart generation succeeded")
     generated_at: str = Field(..., description="Timestamp of latest forecast run")
     last_price_date: str = Field(..., description="Reference date for latest forecast")
-    last_price: float = Field(..., description="Last known price used by latest forecast")
+    last_price: float = Field(
+        ..., description="Last known price used by latest forecast"
+    )
     calibration_method: str = Field(
         ..., description="How uncertainty bands were calibrated"
     )
@@ -398,8 +417,8 @@ class ExplanationResponse(BaseModel):
     sentiment_headlines: List[SentimentHeadline] = Field(
         ..., description="Top 3 sentiment headlines"
     )
-    explanation_text: str = Field(
-        ..., description="3-sentence plain English narrative"
-    )
+    explanation_text: str = Field(..., description="3-sentence plain English narrative")
     generated_at: str = Field(..., description="ISO timestamp of generation")
-    computation_time_seconds: float = Field(..., description="How long computation took")
+    computation_time_seconds: float = Field(
+        ..., description="How long computation took"
+    )

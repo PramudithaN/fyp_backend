@@ -19,9 +19,11 @@ import logging
 
 try:
     import libsql_experimental as libsql
+
     _USE_EXPERIMENTAL_LIBSQL = True
 except ModuleNotFoundError:
     import libsql_client
+
     _USE_EXPERIMENTAL_LIBSQL = False
 
 logger = logging.getLogger(__name__)
@@ -107,9 +109,7 @@ def get_connection():
     if url and url.startswith("libsql://"):
         url = url.replace("libsql://", "https://", 1)
 
-    logger.warning(
-        "libsql_experimental unavailable; using libsql_client sync fallback"
-    )
+    logger.warning("libsql_experimental unavailable; using libsql_client sync fallback")
     client = libsql_client.create_client_sync(url=url, auth_token=auth_token)
     return _LibsqlClientConnection(client)
 
@@ -327,12 +327,10 @@ def init_database() -> None:
     _ensure_table_column(cursor, "predictions", "forecast_day_4", "REAL")
     _ensure_table_column(cursor, "predictions", "forecast_day_5", "REAL")
     _ensure_table_column(cursor, "predictions", "locked_at", "TEXT")
-    cursor.execute(
-        """
+    cursor.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS idx_predictions_prediction_date
         ON predictions(prediction_date)
-        """
-    )
+        """)
 
     # Create explanations table (stores daily explainability results)
     cursor.execute("""
@@ -372,7 +370,9 @@ def init_database() -> None:
 
     conn.commit()
     conn.close()
-    logger.info("Database initialized successfully (sentiment, prices, articles, predictions, explanations)")
+    logger.info(
+        "Database initialized successfully (sentiment, prices, articles, predictions, explanations)"
+    )
 
 
 def add_sentiment(
@@ -1471,8 +1471,7 @@ def get_latest_locked_prediction() -> Optional[Dict[str, Any]]:
     """Return latest locked prediction, preferring prediction_date when available."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        """
+    cursor.execute("""
         SELECT *
         FROM predictions
         ORDER BY
@@ -1480,8 +1479,7 @@ def get_latest_locked_prediction() -> Optional[Dict[str, Any]]:
             prediction_date DESC,
             id DESC
         LIMIT 1
-        """
-    )
+        """)
     result = _fetchone_dict(cursor)
     conn.close()
 
@@ -1504,9 +1502,7 @@ def get_prediction_history(limit: int = 10) -> List[Dict[str, Any]]:
     """Return the last N prediction runs (most recent first)."""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM predictions ORDER BY id DESC LIMIT ?", (limit,)
-    )
+    cursor.execute("SELECT * FROM predictions ORDER BY id DESC LIMIT ?", (limit,))
     rows = []
     for rec in _fetchall_dicts(cursor):
         rec["forecasts"] = json.loads(rec["forecasts"])
@@ -1613,7 +1609,9 @@ def _calibration_pool_for_horizon(
     return [-0.03, -0.015, 0.0, 0.015, 0.03]
 
 
-def get_latest_prediction_fan_chart(min_samples_per_horizon: int = 20) -> Dict[str, Any]:
+def get_latest_prediction_fan_chart(
+    min_samples_per_horizon: int = 20,
+) -> Dict[str, Any]:
     """
     Return fan chart data for the latest prediction run using empirical error calibration.
 
@@ -1923,9 +1921,15 @@ def get_actual_vs_predicted_until(
     Returns:
         Dict with comparison rows and error summary metrics.
     """
-    cutoff_date = date.today() if end_date is None else datetime.strptime(end_date, "%Y-%m-%d").date()
+    cutoff_date = (
+        date.today()
+        if end_date is None
+        else datetime.strptime(end_date, "%Y-%m-%d").date()
+    )
     start_bound = (
-        datetime.strptime(start_date, "%Y-%m-%d").date() if start_date is not None else None
+        datetime.strptime(start_date, "%Y-%m-%d").date()
+        if start_date is not None
+        else None
     )
 
     conn = get_connection()
@@ -1951,7 +1955,10 @@ def get_actual_vs_predicted_until(
                 WHERE date >= ? AND date <= ?
                 ORDER BY date ASC
                 """,
-                params=(start_bound.strftime("%Y-%m-%d"), cutoff_date.strftime("%Y-%m-%d")),
+                params=(
+                    start_bound.strftime("%Y-%m-%d"),
+                    cutoff_date.strftime("%Y-%m-%d"),
+                ),
             )
 
         if actual_df.empty:
@@ -1970,7 +1977,9 @@ def get_actual_vs_predicted_until(
 
     actual_df["date"] = pd.to_datetime(actual_df["date"]).dt.date
 
-    per_date_predictions = _collect_predictions_by_target_date(prediction_runs, cutoff_date)
+    per_date_predictions = _collect_predictions_by_target_date(
+        prediction_runs, cutoff_date
+    )
     rows = _build_comparison_rows(actual_df, per_date_predictions)
 
     if not rows:
@@ -2076,8 +2085,12 @@ def get_explanation_for_date(explanation_date: str) -> Optional[Dict[str, Any]]:
         result = _fetchone_dict(cursor)
         if result:
             # Parse JSON fields
-            result["top_shap_features"] = json.loads(result.get("top_shap_features", "[]"))
-            result["sentiment_headlines"] = json.loads(result.get("sentiment_headlines", "[]"))
+            result["top_shap_features"] = json.loads(
+                result.get("top_shap_features", "[]")
+            )
+            result["sentiment_headlines"] = json.loads(
+                result.get("sentiment_headlines", "[]")
+            )
             result["model_weights"] = json.loads(result.get("model_weights", "{}"))
             raw_payload = result.get("xai_payload")
             result["xai_payload"] = json.loads(raw_payload) if raw_payload else None
@@ -2101,7 +2114,9 @@ def explanation_exists_for_date(explanation_date: str) -> bool:
         conn.close()
 
 
-def update_explanation_xai_payload(explanation_date: str, xai_payload: Dict[str, Any]) -> bool:
+def update_explanation_xai_payload(
+    explanation_date: str, xai_payload: Dict[str, Any]
+) -> bool:
     """
     Update the xai_payload column for an existing explanation row.
 

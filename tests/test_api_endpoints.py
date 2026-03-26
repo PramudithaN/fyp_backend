@@ -54,9 +54,7 @@ class TestPricesEndpoint:
     """Tests for prices endpoint."""
 
     @patch("app.main._sync_latest_prices")
-    def test_get_prices_success(
-        self, mock_sync_prices, test_client, sample_prices_df
-    ):
+    def test_get_prices_success(self, mock_sync_prices, test_client, sample_prices_df):
         """Test successful price fetch."""
         mock_sync_prices.return_value = sample_prices_df
 
@@ -107,7 +105,10 @@ class TestNewsEndpoint:
         assert data["days"] == 3
         assert data["latest_article_date"] == "2026-03-16"
         assert data["articles"][0]["title"] == "Oil prices edge higher"
-        assert data["articles"][0]["image_url"] == "https://images.pexels.com/photos/1/sample.jpg"
+        assert (
+            data["articles"][0]["image_url"]
+            == "https://images.pexels.com/photos/1/sample.jpg"
+        )
         mock_get_recent_news.assert_called_once_with(days=3)
 
     @patch("app.main.get_news_articles")
@@ -134,7 +135,10 @@ class TestNewsEndpoint:
         assert data["requested_date"] == "2026-03-15"
         assert data["days"] == 1
         assert data["articles"][0]["source"] == "Bloomberg"
-        assert data["articles"][0]["image_url"] == "https://images.pexels.com/photos/2/sample.jpg"
+        assert (
+            data["articles"][0]["image_url"]
+            == "https://images.pexels.com/photos/2/sample.jpg"
+        )
         mock_get_news_articles.assert_called_once_with("2026-03-15")
 
     def test_get_news_invalid_date(self, test_client):
@@ -310,14 +314,17 @@ class TestUploadPredictionEndpoints:
             response.headers["content-type"]
             == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        assert "attachment; filename=oil_price_upload_template.xlsx" in response.headers.get(
-            "content-disposition", ""
+        assert (
+            "attachment; filename=oil_price_upload_template.xlsx"
+            in response.headers.get("content-disposition", "")
         )
         assert response.content[:2] == b"PK"
 
     @patch("app.main.get_market_status")
     @patch("app.main.run_prediction_from_uploaded_excel")
-    def test_upload_predict_success(self, mock_upload_predict, mock_get_market_status, test_client):
+    def test_upload_predict_success(
+        self, mock_upload_predict, mock_get_market_status, test_client
+    ):
         """Upload endpoint should return model payload for valid excel uploads."""
         mock_upload_predict.return_value = {
             "data_source": "Uploaded Excel + Database Backfill + Sentiment History",
@@ -506,9 +513,9 @@ class TestUploadPredictionEndpoints:
         """Upload should reject files containing more than 30 rows."""
         too_many_df = pd.DataFrame(
             {
-                "date": pd.date_range(end=datetime.now(), periods=31, freq="D").strftime(
-                    "%Y-%m-%d"
-                ),
+                "date": pd.date_range(
+                    end=datetime.now(), periods=31, freq="D"
+                ).strftime("%Y-%m-%d"),
                 "price": np.linspace(80, 85, 31),
             }
         )

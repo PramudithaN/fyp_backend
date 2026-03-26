@@ -13,7 +13,6 @@ from app.database import get_prices_for_date_range, get_sentiment_for_dates
 from app.models.model_loader import model_artifacts
 from app.services.prediction import prediction_service
 
-
 SUPPORTED_EXTENSIONS = (".xlsx", ".xls")
 _DATE_COL_CANDIDATES = ("date", "day", "timestamp", "datetime")
 _PRICE_COL_CANDIDATES = (
@@ -89,7 +88,9 @@ def _is_blank_cell(value: Any) -> bool:
     return bool(pd.isna(value))
 
 
-def _summarize_row_errors(messages: list[str], total_rows: int, shown_rows: int = 10) -> str:
+def _summarize_row_errors(
+    messages: list[str], total_rows: int, shown_rows: int = 10
+) -> str:
     if not messages:
         return ""
 
@@ -127,7 +128,9 @@ def _parse_price_cell(raw_price: Any) -> tuple[float | None, str | None]:
         return None, None
 
     try:
-        parsed_price = float(raw_price.strip()) if isinstance(raw_price, str) else float(raw_price)
+        parsed_price = (
+            float(raw_price.strip()) if isinstance(raw_price, str) else float(raw_price)
+        )
     except (TypeError, ValueError):
         return None, "price must be a numeric value greater than 0"
 
@@ -137,7 +140,9 @@ def _parse_price_cell(raw_price: Any) -> tuple[float | None, str | None]:
     return parsed_price, None
 
 
-def _extract_validated_rows(non_empty_rows: pd.DataFrame) -> tuple[list[dict[str, Any]], list[str]]:
+def _extract_validated_rows(
+    non_empty_rows: pd.DataFrame,
+) -> tuple[list[dict[str, Any]], list[str]]:
     row_errors: list[str] = []
     valid_rows: list[dict[str, Any]] = []
 
@@ -203,10 +208,7 @@ def parse_uploaded_price_excel(
     parsed.columns = ["date", "price"]
 
     non_empty_rows = parsed[
-        ~(
-            parsed["date"].apply(_is_blank_cell)
-            & parsed["price"].apply(_is_blank_cell)
-        )
+        ~(parsed["date"].apply(_is_blank_cell) & parsed["price"].apply(_is_blank_cell))
     ].copy()
 
     if non_empty_rows.empty:
@@ -305,7 +307,9 @@ def _build_lookback_price_window(
     return out, stats
 
 
-def _build_sentiment_window(start_date: pd.Timestamp, end_date: pd.Timestamp) -> pd.DataFrame:
+def _build_sentiment_window(
+    start_date: pd.Timestamp, end_date: pd.Timestamp
+) -> pd.DataFrame:
     """Fetch and align sentiment rows for the same period used by prediction."""
     sentiment_start = (start_date - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     sentiment_end = (end_date - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
@@ -341,7 +345,9 @@ def _build_sentiment_window(start_date: pd.Timestamp, end_date: pd.Timestamp) ->
     ]:
         if col not in merged.columns:
             merged[col] = 0.0
-        merged[col] = pd.to_numeric(merged[col], errors="coerce").ffill().bfill().fillna(0.0)
+        merged[col] = (
+            pd.to_numeric(merged[col], errors="coerce").ffill().bfill().fillna(0.0)
+        )
 
     if "high_news_regime" not in merged.columns:
         merged["high_news_regime"] = 0

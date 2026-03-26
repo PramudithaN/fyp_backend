@@ -36,7 +36,7 @@ def load_sentiment_model():
 
     Returns:
         Tuple of (model, tokenizer, device)
-    
+
     Raises:
         Exception if model loading fails (network issues, missing dependencies, etc.)
     """
@@ -51,8 +51,10 @@ def load_sentiment_model():
     try:
         from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
-        logger.info("Downloading model from Hugging Face (this may take a few minutes on first run)...")
-        
+        logger.info(
+            "Downloading model from Hugging Face (this may take a few minutes on first run)..."
+        )
+
         # Always pass an explicit revision for safer/reproducible model loads.
         _tokenizer = AutoTokenizer.from_pretrained(
             model_name,
@@ -75,7 +77,9 @@ def load_sentiment_model():
 
     except Exception as e:
         logger.error(f"Failed to load FinBERT model from Hugging Face: {e}")
-        logger.error("If this deployment has no internet access, set SKIP_FINBERT_PRELOAD=true")
+        logger.error(
+            "If this deployment has no internet access, set SKIP_FINBERT_PRELOAD=true"
+        )
         logger.error("Model will be loaded on first prediction request instead")
         raise
 

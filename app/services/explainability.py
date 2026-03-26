@@ -66,20 +66,32 @@ logger = logging.getLogger(__name__)
 # Maps HF feature names to display categories for the dashboard
 FEATURE_CATEGORIES: Dict[str, str] = {
     "log_return": "price",
-    "ret_lag_1": "price", "ret_lag_2": "price", "ret_lag_3": "price",
-    "ret_lag_5": "price", "ret_lag_7": "price", "ret_lag_10": "price",
+    "ret_lag_1": "price",
+    "ret_lag_2": "price",
+    "ret_lag_3": "price",
+    "ret_lag_5": "price",
+    "ret_lag_7": "price",
+    "ret_lag_10": "price",
     "ret_lag_14": "price",
-    "vol_5": "volatility", "vol_10": "volatility", "vol_14": "volatility",
-    "momentum_7": "technical", "momentum_14": "technical", "rsi_14": "technical",
+    "vol_5": "volatility",
+    "vol_10": "volatility",
+    "vol_14": "volatility",
+    "momentum_7": "technical",
+    "momentum_14": "technical",
+    "rsi_14": "technical",
     "daily_sentiment_decay": "sentiment",
-    "news_volume": "sentiment", "log_news_volume": "sentiment",
-    "decayed_news_volume": "sentiment", "high_news_regime": "sentiment",
+    "news_volume": "sentiment",
+    "log_news_volume": "sentiment",
+    "decayed_news_volume": "sentiment",
+    "high_news_regime": "sentiment",
     "daily_sentiment_decay_ema_3": "sentiment",
     "daily_sentiment_decay_ema_7": "sentiment",
     "daily_sentiment_decay_ema_14": "sentiment",
-    "news_volume_ema_3": "sentiment", "news_volume_ema_7": "sentiment",
+    "news_volume_ema_3": "sentiment",
+    "news_volume_ema_7": "sentiment",
     "news_volume_ema_14": "sentiment",
-    "log_news_volume_ema_3": "sentiment", "log_news_volume_ema_7": "sentiment",
+    "log_news_volume_ema_3": "sentiment",
+    "log_news_volume_ema_7": "sentiment",
     "log_news_volume_ema_14": "sentiment",
     "decayed_news_volume_ema_3": "sentiment",
     "decayed_news_volume_ema_7": "sentiment",
@@ -109,7 +121,9 @@ class ExplainabilityService:
             logger.info("Phi-3-mini LLM loaded successfully")
         return self._llm_pipeline
 
-    def _validate_prices_available_for_prediction_date(self, prediction_date: str) -> bool:
+    def _validate_prices_available_for_prediction_date(
+        self, prediction_date: str
+    ) -> bool:
         """
         Verify that price data is fresh enough for the canonical prediction date.
 
@@ -147,14 +161,19 @@ class ExplainabilityService:
                             "price": float(row["price"]),
                             "source": "yahoo_finance",
                         }
-                        for row in live_prices[["date", "price"]].to_dict(orient="records")
+                        for row in live_prices[["date", "price"]].to_dict(
+                            orient="records"
+                        )
                     ]
                     if records:
                         add_bulk_prices(records)
                         prices_df = get_prices_db(days=7)
                         days_behind = _days_behind_latest(prices_df)
                 except Exception as live_err:
-                    logger.warning("Live price refresh failed during explainability validation: %s", live_err)
+                    logger.warning(
+                        "Live price refresh failed during explainability validation: %s",
+                        live_err,
+                    )
 
             if days_behind is None:
                 logger.warning("No prices found in database after refresh attempt.")
@@ -201,11 +220,15 @@ class ExplainabilityService:
         prediction_key = current_prediction_date_local()
         explanation_date = prediction_key
 
-        logger.info("Starting daily explainability job for prediction_key=%s", prediction_key)
+        logger.info(
+            "Starting daily explainability job for prediction_key=%s", prediction_key
+        )
 
         # Step 0b: Validate that today's prices are available (critical check)
         try:
-            prices_available = self._validate_prices_available_for_prediction_date(prediction_key)
+            prices_available = self._validate_prices_available_for_prediction_date(
+                prediction_key
+            )
             if not prices_available:
                 logger.warning(
                     "Prices not ready for canonical prediction key %s. Deferring explainability job.",
@@ -224,10 +247,13 @@ class ExplainabilityService:
             # Step 1: Generate prediction and fetch data
             logger.info("Step 1: Generating prediction...")
             prediction_result, prices_df, _ = self._fetch_prediction_data()
-            explanation_date = str(prediction_result.get("prediction_date") or prediction_key)
+            explanation_date = str(
+                prediction_result.get("prediction_date") or prediction_key
+            )
 
             # Step 1b: Skip if explanation already exists for this prediction snapshot date
             from app.database import explanation_exists_for_date
+
             if explanation_exists_for_date(explanation_date):
                 logger.info(
                     "Explanation already exists for prediction date %s, skipping computation",
@@ -244,7 +270,9 @@ class ExplainabilityService:
             arima_explanation = self._explain_arima(prices_df)
 
             # Step 3: Level 1 — Ridge meta-model SHAP (sub-model contributions)
-            logger.info("Step 3: Computing Ridge SHAP (Level 1 — sub-model attribution)...")
+            logger.info(
+                "Step 3: Computing Ridge SHAP (Level 1 — sub-model attribution)..."
+            )
             ridge_explanation = self._explain_ridge(prices_df)
 
             # Step 4: GRU attention weights (built-in XAI for sentiment stream)
@@ -252,7 +280,9 @@ class ExplainabilityService:
             gru_attention = self._explain_gru_attention(prices_df)
 
             # Step 5: Level 2 — XGBoost SHAP (feature-level attribution)
-            logger.info("Step 5: Computing XGBoost SHAP (Level 2 — feature attribution)...")
+            logger.info(
+                "Step 5: Computing XGBoost SHAP (Level 2 — feature attribution)..."
+            )
             xgb_explanation = self._explain_xgboost(prices_df)
 
             # Step 6: Sentiment explainability
@@ -281,10 +311,16 @@ class ExplainabilityService:
 
             # Step 9: Build full dashboard-ready XAI payload and store
             logger.info("Step 9: Storing explanation in database...")
-            xai_payload = self._build_xai_payload(explanation_date, aggregated, llm_result)
+            xai_payload = self._build_xai_payload(
+                explanation_date, aggregated, llm_result
+            )
             computation_time = time.time() - job_start
             self._store_explanation(
-                explanation_date, aggregated, explanation_text, computation_time, xai_payload
+                explanation_date,
+                aggregated,
+                explanation_text,
+                computation_time,
+                xai_payload,
             )
 
             logger.info(
@@ -323,6 +359,7 @@ class ExplainabilityService:
         # Fetch live prices and upsert into database, then return as DataFrame
         from app.services.price_fetcher import fetch_latest_prices
         from app.database import add_bulk_prices, get_prices as get_prices_db
+
         try:
             latest_prices = fetch_latest_prices(lookback_days=120)
             records = [
@@ -336,7 +373,9 @@ class ExplainabilityService:
             if records:
                 add_bulk_prices(records)
             latest_prices = latest_prices[["date", "price"]].copy()
-            latest_prices["date"] = pd.to_datetime(latest_prices["date"]).dt.tz_localize(None)
+            latest_prices["date"] = pd.to_datetime(
+                latest_prices["date"]
+            ).dt.tz_localize(None)
         except Exception as e:
             logger.warning(f"Live price fetch failed, falling back to DB: {e}")
             latest_prices = get_prices_db(days=120)
@@ -447,7 +486,9 @@ class ExplainabilityService:
                 "trend_contribution": float(trend_contribution),
                 "seasonal_contribution": float(seasonal_contribution),
                 "residual_contribution": float(residual_contribution),
-                "forecast_mean": float(forecast_mean[0]) if len(forecast_mean) > 0 else last_price,
+                "forecast_mean": (
+                    float(forecast_mean[0]) if len(forecast_mean) > 0 else last_price
+                ),
             }
 
         except Exception as e:
@@ -513,12 +554,16 @@ class ExplainabilityService:
                 hf_fc = np.zeros(self.artifacts.horizon)
 
             # Stack inputs for Ridge horizon-1 model
-            x_meta = np.array([[
-                float(trend_fc[0]),
-                float(mid_fc[0]),
-                float(sent_fc[0]),
-                float(hf_fc[0]),
-            ]])
+            x_meta = np.array(
+                [
+                    [
+                        float(trend_fc[0]),
+                        float(mid_fc[0]),
+                        float(sent_fc[0]),
+                        float(hf_fc[0]),
+                    ]
+                ]
+            )
 
             ridge_model = self.artifacts.meta_models.get(1)
             meta_scaler = self.artifacts.meta_scalers.get(1)
@@ -549,7 +594,9 @@ class ExplainabilityService:
                     "direction": "positive" if sv >= 0 else "negative",
                 }
 
-            dominant = max(model_contributions, key=lambda n: model_contributions[n]["pct"])
+            dominant = max(
+                model_contributions, key=lambda n: model_contributions[n]["pct"]
+            )
 
             return {
                 "model_contributions": model_contributions,
@@ -582,7 +629,13 @@ class ExplainabilityService:
             recent_sentiment_df = get_sentiment_history(days=LOOKBACK + 30)
             feat_df = engineer_all_features(prices_df, recent_sentiment_df)
             if feat_df is None or len(feat_df) < 2:
-                return {"top_timesteps": [], "attention_vector": [], "top_timestep_lag": 0, "top_attention_weight": 0.0, "method": "insufficient_data"}
+                return {
+                    "top_timesteps": [],
+                    "attention_vector": [],
+                    "top_timestep_lag": 0,
+                    "top_attention_weight": 0.0,
+                    "method": "insufficient_data",
+                }
 
             _, x_sent = prepare_sentiment_features(feat_df, LOOKBACK)
 
@@ -597,16 +650,22 @@ class ExplainabilityService:
 
             sent_gru = self.artifacts.sent_gru
             if sent_gru is None:
-                return {"top_timesteps": [], "attention_vector": [], "top_timestep_lag": 0, "top_attention_weight": 0.0, "method": "model_unavailable"}
+                return {
+                    "top_timesteps": [],
+                    "attention_vector": [],
+                    "top_timestep_lag": 0,
+                    "top_attention_weight": 0.0,
+                    "method": "model_unavailable",
+                }
 
             sent_gru.eval()
             with torch.no_grad():
                 # Replicate Attention.forward to capture weights before summing
-                hs, _ = sent_gru.sent_gru(x_sent_tensor)   # (1, LOOKBACK, hidden)
-                attn_logits = sent_gru.attn.attn(hs)        # (1, LOOKBACK, 1)
+                hs, _ = sent_gru.sent_gru(x_sent_tensor)  # (1, LOOKBACK, hidden)
+                attn_logits = sent_gru.attn.attn(hs)  # (1, LOOKBACK, 1)
                 attn_weights = (
                     torch.softmax(attn_logits, dim=1)
-                    .squeeze()                               # (LOOKBACK,) or scalar
+                    .squeeze()  # (LOOKBACK,) or scalar
                     .cpu()
                     .numpy()
                 )
@@ -623,14 +682,24 @@ class ExplainabilityService:
                     "timestep": int(idx),
                     "days_ago": int(seq_len - idx),
                     "attention_weight": float(attn_np[idx]),
-                    "pct": float(attn_np[idx] / total_weight * 100) if total_weight > 0 else 0.0,
+                    "pct": (
+                        float(attn_np[idx] / total_weight * 100)
+                        if total_weight > 0
+                        else 0.0
+                    ),
                 }
                 for idx in top_indices
             ]
 
-            top5_mass = float(attn_np[top_indices].sum() / total_weight * 100) if total_weight > 0 else 0.0
+            top5_mass = (
+                float(attn_np[top_indices].sum() / total_weight * 100)
+                if total_weight > 0
+                else 0.0
+            )
             top_lag = int(seq_len - top_indices[0]) if len(top_indices) > 0 else 0
-            top_attn_weight = float(attn_np[top_indices[0]]) if len(top_indices) > 0 else 0.0
+            top_attn_weight = (
+                float(attn_np[top_indices[0]]) if len(top_indices) > 0 else 0.0
+            )
 
             return {
                 "top_timesteps": top_timesteps,
@@ -643,7 +712,13 @@ class ExplainabilityService:
 
         except Exception as e:
             logger.warning(f"GRU attention extraction failed: {e}")
-            return {"top_timesteps": [], "attention_vector": [], "top_timestep_lag": 0, "top_attention_weight": 0.0, "method": "failed"}
+            return {
+                "top_timesteps": [],
+                "attention_vector": [],
+                "top_timestep_lag": 0,
+                "top_attention_weight": 0.0,
+                "method": "failed",
+            }
 
     def _explain_gru(self, prices_df: pd.DataFrame) -> Dict[str, Any]:
         """
@@ -662,7 +737,10 @@ class ExplainabilityService:
         try:
             # Prepare features for GRU — engineer_all_features returns the full df,
             # then prepare_mid_features returns numpy (1, lookback, n_features)
-            from app.services.feature_engineering import engineer_all_features, prepare_mid_features
+            from app.services.feature_engineering import (
+                engineer_all_features,
+                prepare_mid_features,
+            )
 
             recent_sentiment_df = get_sentiment_history(days=LOOKBACK + 30)
             feat_df = engineer_all_features(prices_df, recent_sentiment_df)
@@ -673,7 +751,9 @@ class ExplainabilityService:
             # prepare_mid_features returns numpy shape (1, lookback, n_features)
             x_input = prepare_mid_features(feat_df, lookback=LOOKBACK)
             # Convert to tensor — x_input already has shape (1, LOOKBACK, n_features)
-            x_tensor = torch.tensor(x_input, dtype=torch.float32, device=self.artifacts.device)
+            x_tensor = torch.tensor(
+                x_input, dtype=torch.float32, device=self.artifacts.device
+            )
 
             # Run TimeSHAP (expensive - use local_report with limited samples)
             # Note: TimeSHAP may not be fully compatible with all GRU architectures
@@ -685,7 +765,9 @@ class ExplainabilityService:
                     timestep=True,
                     num_samples=10,
                 )
-                shap_values = report.shap_values if hasattr(report, "shap_values") else []
+                shap_values = (
+                    report.shap_values if hasattr(report, "shap_values") else []
+                )
             except Exception as e:
                 logger.warning(f"TimeSHAP local_report failed: {e}, using alternatives")
                 shap_values = []
@@ -700,7 +782,11 @@ class ExplainabilityService:
                         {
                             "timestep": int(timestep_idx),
                             "days_ago": int(days_ago),
-                            "shap_value": float(np.mean(shap_val)) if isinstance(shap_val, np.ndarray) else float(shap_val),
+                            "shap_value": (
+                                float(np.mean(shap_val))
+                                if isinstance(shap_val, np.ndarray)
+                                else float(shap_val)
+                            ),
                             "feature_name": "multi-feature composition",
                         }
                     )
@@ -727,8 +813,10 @@ class ExplainabilityService:
         if shap is None:
             logger.warning("SHAP library not available")
             return {
-                "top_features": [], "method": "unavailable",
-                "total_sentiment_impact_usd": 0.0, "high_news_regime_flagged": False,
+                "top_features": [],
+                "method": "unavailable",
+                "total_sentiment_impact_usd": 0.0,
+                "high_news_regime_flagged": False,
             }
 
         try:
@@ -743,15 +831,19 @@ class ExplainabilityService:
             if feat_df is None or len(feat_df) == 0:
                 logger.warning("Insufficient XGBoost features")
                 return {
-                    "top_features": [], "method": "insufficient_data",
-                    "total_sentiment_impact_usd": 0.0, "high_news_regime_flagged": False,
+                    "top_features": [],
+                    "method": "insufficient_data",
+                    "total_sentiment_impact_usd": 0.0,
+                    "high_news_regime_flagged": False,
                 }
 
             x_today = prepare_hf_features(feat_df)  # shape: (1, n_features)
             if x_today is None or x_today.shape[0] == 0:
                 return {
-                    "top_features": [], "method": "insufficient_data",
-                    "total_sentiment_impact_usd": 0.0, "high_news_regime_flagged": False,
+                    "top_features": [],
+                    "method": "insufficient_data",
+                    "total_sentiment_impact_usd": 0.0,
+                    "high_news_regime_flagged": False,
                 }
 
             feature_names = get_hf_features()
@@ -760,8 +852,10 @@ class ExplainabilityService:
             xgb_model = self.artifacts.xgb_hf_models.get(1)
             if xgb_model is None:
                 return {
-                    "top_features": [], "method": "model_unavailable",
-                    "total_sentiment_impact_usd": 0.0, "high_news_regime_flagged": False,
+                    "top_features": [],
+                    "method": "model_unavailable",
+                    "total_sentiment_impact_usd": 0.0,
+                    "high_news_regime_flagged": False,
                 }
 
             explainer = shap.TreeExplainer(xgb_model)
@@ -780,7 +874,11 @@ class ExplainabilityService:
             )
 
             # High-news-regime flag from the feature value itself
-            hnr_idx = feature_names.index("high_news_regime") if "high_news_regime" in feature_names else -1
+            hnr_idx = (
+                feature_names.index("high_news_regime")
+                if "high_news_regime" in feature_names
+                else -1
+            )
             high_news_regime_flagged = bool(
                 hnr_idx >= 0 and float(x_today[0, hnr_idx]) > 0.5
             )
@@ -788,7 +886,11 @@ class ExplainabilityService:
             return {
                 "top_features": top_features,
                 "method": "shap",
-                "baseline": float(explainer.expected_value) if hasattr(explainer, "expected_value") else 0.0,
+                "baseline": (
+                    float(explainer.expected_value)
+                    if hasattr(explainer, "expected_value")
+                    else 0.0
+                ),
                 "total_sentiment_impact_usd": float(total_sentiment_usd),
                 "high_news_regime_flagged": high_news_regime_flagged,
             }
@@ -796,8 +898,10 @@ class ExplainabilityService:
         except Exception as e:
             logger.warning(f"XGBoost SHAP failed: {e}")
             return {
-                "top_features": [], "method": "failed",
-                "total_sentiment_impact_usd": 0.0, "high_news_regime_flagged": False,
+                "top_features": [],
+                "method": "failed",
+                "total_sentiment_impact_usd": 0.0,
+                "high_news_regime_flagged": False,
             }
 
     def _flatten_shap_values(self, raw_shap_values: Any) -> np.ndarray:
@@ -828,7 +932,9 @@ class ExplainabilityService:
 
         top_features: List[Dict[str, Any]] = []
         for idx in np.argsort(np.abs(shap_values))[-top_k:][::-1]:
-            feature_name = feature_names[idx] if idx < len(feature_names) else f"feature_{idx}"
+            feature_name = (
+                feature_names[idx] if idx < len(feature_names) else f"feature_{idx}"
+            )
             sv = float(shap_values[idx])
             top_features.append(
                 {
@@ -849,7 +955,9 @@ class ExplainabilityService:
             return "bearish"
         return "neutral"
 
-    def _prepare_scored_articles(self, articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _prepare_scored_articles(
+        self, articles: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Extract title/score/description for recent articles, skipping malformed rows."""
         articles_with_score = []
         for article in articles[:10]:
@@ -868,7 +976,9 @@ class ExplainabilityService:
                 continue
         return articles_with_score
 
-    def _build_sentiment_headline(self, article: Dict[str, Any]) -> Dict[str, Any] | None:
+    def _build_sentiment_headline(
+        self, article: Dict[str, Any]
+    ) -> Dict[str, Any] | None:
         """Create one headline explanation row from an article record."""
         try:
             title = article["title"]
@@ -984,7 +1094,10 @@ class ExplainabilityService:
         top_global_features = xgb_exp.get("top_features", [])[:7]
 
         # Compute agreement score (lower = higher agreement)
-        forecast_prices = [f.get("forecasted_price", prediction["last_price"]) for f in prediction.get("forecasts", [])]
+        forecast_prices = [
+            f.get("forecasted_price", prediction["last_price"])
+            for f in prediction.get("forecasts", [])
+        ]
         if forecast_prices and len(forecast_prices) > 1:
             mean_price = np.mean(forecast_prices)
             std_price = np.std(forecast_prices)
@@ -1009,12 +1122,18 @@ class ExplainabilityService:
         sentiment_dominant = dominant_model in ("sent_gru", "sentiment_gru")
 
         # Total sentiment USD impact from XGBoost SHAP
-        total_sentiment_impact_usd = float(xgb_exp.get("total_sentiment_impact_usd", 0.0))
+        total_sentiment_impact_usd = float(
+            xgb_exp.get("total_sentiment_impact_usd", 0.0)
+        )
         high_news_regime_flagged = bool(xgb_exp.get("high_news_regime_flagged", False))
 
         # Top sentiment feature (first sentiment-category feature in XGB top features)
         top_sentiment_feature = next(
-            (f["feature_name"] for f in top_global_features if f.get("category") == "sentiment"),
+            (
+                f["feature_name"]
+                for f in top_global_features
+                if f.get("category") == "sentiment"
+            ),
             "daily_sentiment_decay_ema_3",
         )
 
@@ -1110,7 +1229,9 @@ class ExplainabilityService:
         gru_attn = aggregated.get("gru_attention", {})
         attn_ts = gru_attn.get("top_timesteps", [])
         if attn_ts:
-            prompt_parts.append("\nSentiment-GRU Attention (most influential past days):")
+            prompt_parts.append(
+                "\nSentiment-GRU Attention (most influential past days):"
+            )
             for t in attn_ts[:3]:
                 prompt_parts.append(
                     f"  {t['days_ago']} days ago — {t['pct']:.1f}% attention"
@@ -1157,22 +1278,28 @@ class ExplainabilityService:
             ridge_exp = aggregated.get("ridge_explanation", {})
             ridge_contributions = ridge_exp.get("model_contributions", {})
             dominant = ridge_exp.get("dominant_model", "unknown")
-            ridge_lines = "\n".join(
-                f"  {name}: {data['pct']:.1f}% "
-                f"({'▲' if data['direction'] == 'positive' else '▼'} "
-                f"SHAP {data['shap_value']:+.4f})"
-                for name, data in sorted(
-                    ridge_contributions.items(), key=lambda x: -x[1]["pct"]
+            ridge_lines = (
+                "\n".join(
+                    f"  {name}: {data['pct']:.1f}% "
+                    f"({'▲' if data['direction'] == 'positive' else '▼'} "
+                    f"SHAP {data['shap_value']:+.4f})"
+                    for name, data in sorted(
+                        ridge_contributions.items(), key=lambda x: -x[1]["pct"]
+                    )
                 )
-            ) or _na
+                or _na
+            )
 
             # Level 2 — XGBoost SHAP
             xgb_features = aggregated.get("top_features", [])
-            xgb_lines = "\n".join(
-                f"  {f['feature_name'].replace('_', ' ')}: "
-                f"SHAP {f['shap_value_usd']:+.4f} USD ({f['direction']}) [{f['category']}]"
-                for f in xgb_features[:5]
-            ) or _na
+            xgb_lines = (
+                "\n".join(
+                    f"  {f['feature_name'].replace('_', ' ')}: "
+                    f"SHAP {f['shap_value_usd']:+.4f} USD ({f['direction']}) [{f['category']}]"
+                    for f in xgb_features[:5]
+                )
+                or _na
+            )
 
             # GRU Attention
             gru_attn = aggregated.get("gru_attention", {})
@@ -1180,17 +1307,23 @@ class ExplainabilityService:
             top_lag = aggregated.get("top_timestep_lag", 0)
             top_attn_w = aggregated.get("top_attention_weight", 0.0)
             hnr = aggregated.get("high_news_regime_flagged", False)
-            attn_lines = "\n".join(
-                f"  t-{t['days_ago']}: {t['pct']:.1f}% attention"
-                for t in attn_ts[:5]
-            ) or _na
+            attn_lines = (
+                "\n".join(
+                    f"  t-{t['days_ago']}: {t['pct']:.1f}% attention"
+                    for t in attn_ts[:5]
+                )
+                or _na
+            )
 
             # Sentiment headlines
             headlines = aggregated.get("sentiment_headlines", [])
-            headline_lines = "\n".join(
-                f"  [{h.get('sentiment_label','neutral').upper()}] {h.get('headline','')[:90]}"
-                for h in headlines[:3]
-            ) or "  None"
+            headline_lines = (
+                "\n".join(
+                    f"  [{h.get('sentiment_label','neutral').upper()}] {h.get('headline','')[:90]}"
+                    for h in headlines[:3]
+                )
+                or "  None"
+            )
 
             sent_total_usd = aggregated.get("total_sentiment_impact_usd", 0.0)
             top_sent_feat = aggregated.get("top_sentiment_feature", "")
@@ -1244,7 +1377,9 @@ RISK_NOTE:
             return self._parse_llm_sections(raw, "groq")
 
         except Exception as e:
-            logger.warning(f"Groq narrative failed: {e} — falling back to smart template")
+            logger.warning(
+                f"Groq narrative failed: {e} — falling back to smart template"
+            )
             return self._smart_template_narrative(aggregated)
 
     def _parse_llm_sections(self, text: str, model_used: str) -> Dict[str, Any]:
@@ -1301,7 +1436,7 @@ RISK_NOTE:
             if upper.startswith(prefix):
                 return {
                     "key": key,
-                    "value": stripped[len(prefix):].strip(),
+                    "value": stripped[len(prefix) :].strip(),
                 }
 
         return None
@@ -1368,6 +1503,7 @@ RISK_NOTE:
         # Priority 1: Groq
         if aggregated is not None:
             from app.config import GROQ_API_KEY
+
             if GROQ_API_KEY:
                 return self._generate_groq_narrative(aggregated)
 
@@ -1391,12 +1527,18 @@ RISK_NOTE:
                 )
                 if outputs and len(outputs) > 0:
                     generated_text = outputs[0].get("generated_text", "").strip()
-                    sentences = [s.strip() + "." for s in generated_text.split(".") if s.strip()]
+                    sentences = [
+                        s.strip() + "." for s in generated_text.split(".") if s.strip()
+                    ]
                     narrative = " ".join(sentences[:3])
                     if narrative:
-                        return self._wrap_narrative_as_dict(narrative, aggregated, "phi3")
+                        return self._wrap_narrative_as_dict(
+                            narrative, aggregated, "phi3"
+                        )
             except Exception as e:
-                logger.warning(f"Phi-3 LLM generation failed: {e}, falling back to smart template")
+                logger.warning(
+                    f"Phi-3 LLM generation failed: {e}, falling back to smart template"
+                )
 
         # Priority 3: smart template
         if aggregated is not None:
@@ -1419,7 +1561,8 @@ RISK_NOTE:
         direction = aggregated.get("direction", "UP") if aggregated else "UP"
         dominant = (
             aggregated.get("model_weights", {}).get("dominant_model", "")
-            if aggregated else ""
+            if aggregated
+            else ""
         )
         headline = (
             f"{'Bullish' if direction == 'UP' else 'Bearish'} forecast: "
@@ -1449,11 +1592,14 @@ RISK_NOTE:
         change = pred - current
 
         # Dominant sub-model
-        dominant_model = (
-            aggregated.get("ridge_explanation", {}).get("dominant_model", "")
-            or aggregated.get("model_weights", {}).get("dominant_model", "")
+        dominant_model = aggregated.get("ridge_explanation", {}).get(
+            "dominant_model", ""
+        ) or aggregated.get("model_weights", {}).get("dominant_model", "")
+        dominant_text = (
+            f" ({dominant_model.replace('_', '-')} was the dominant sub-model)"
+            if dominant_model
+            else ""
         )
-        dominant_text = f" ({dominant_model.replace('_', '-')} was the dominant sub-model)" if dominant_model else ""
 
         top_features = aggregated.get("top_features", [])
         feature_text = self._build_feature_summary_text(top_features)
@@ -1479,7 +1625,11 @@ RISK_NOTE:
         headline = (
             f"{'Bullish' if direction == 'UP' else 'Bearish'} forecast: "
             f"Brent Crude at ${pred:.2f} ({'+' if change >= 0 else ''}{change:.2f} USD)"
-            + (f" — led by {dominant_model.replace('_', '-')}" if dominant_model else "")
+            + (
+                f" — led by {dominant_model.replace('_', '-')}"
+                if dominant_model
+                else ""
+            )
         )
 
         s1 = (
@@ -1503,7 +1653,11 @@ RISK_NOTE:
             f"{top_sent_feat.replace('_', ' ')} across the 30-day lookback. "
             f"The attention mechanism peaked at t-{top_lag} days ago "
             f"(weight {top_attn_w:.4f})"
-            + (", with high-news-regime active — elevated media activity detected." if hnr else ".")
+            + (
+                ", with high-news-regime active — elevated media activity detected."
+                if hnr
+                else "."
+            )
         )
 
         risk_note = (
@@ -1530,8 +1684,8 @@ RISK_NOTE:
         `xai_dashboard.html` and the frontend.  Stored as `xai_payload` JSON
         in the DB so `/explain` can return it verbatim.
         """
-        ridge_contributions = (
-            aggregated.get("ridge_explanation", {}).get("model_contributions", {})
+        ridge_contributions = aggregated.get("ridge_explanation", {}).get(
+            "model_contributions", {}
         )
         last_price = aggregated["current_price"]
 
@@ -1542,10 +1696,10 @@ RISK_NOTE:
             sv = ridge_contributions.get(name, {}).get("shap_value", 0.0)
             return float(sv) * last_price
 
-        arima_usd   = _ridge_shap_usd("arima")
-        mid_usd     = _ridge_shap_usd("mid_gru")
-        sent_usd    = _ridge_shap_usd("sent_gru")
-        xgb_usd     = _ridge_shap_usd("xgb_hf")
+        arima_usd = _ridge_shap_usd("arima")
+        mid_usd = _ridge_shap_usd("mid_gru")
+        sent_usd = _ridge_shap_usd("sent_gru")
+        xgb_usd = _ridge_shap_usd("xgb_hf")
 
         # Sentiment % of forecast = sent_gru SHAP pct (used for top-stat "SENTIMENT DRIVER")
         sent_gru_pct = ridge_contributions.get("sent_gru", {}).get("pct", 25.0)
@@ -1556,9 +1710,9 @@ RISK_NOTE:
         # Fallback: if Ridge SHAP wasn't available use the absolute contributions
         if not ridge_contributions:
             arima_usd = aggregated["arima_contribution"]
-            mid_usd   = aggregated["gru_mid_contribution"]
-            sent_usd  = aggregated["gru_sent_contribution"]
-            xgb_usd   = aggregated["xgb_hf_contribution"]
+            mid_usd = aggregated["gru_mid_contribution"]
+            sent_usd = aggregated["gru_sent_contribution"]
+            xgb_usd = aggregated["xgb_hf_contribution"]
 
         return {
             "date": explanation_date,
@@ -1581,10 +1735,14 @@ RISK_NOTE:
                 "top_sentiment_feature": aggregated.get("top_sentiment_feature", ""),
                 "top_timestep_lag": aggregated.get("top_timestep_lag", 0),
                 "attention_weight": aggregated.get("top_attention_weight", 0.0),
-                "high_news_regime_flagged": aggregated.get("high_news_regime_flagged", False),
+                "high_news_regime_flagged": aggregated.get(
+                    "high_news_regime_flagged", False
+                ),
                 "attention_vector": aggregated.get("attention_vector", []),
             },
-            "total_sentiment_impact_usd": aggregated.get("total_sentiment_impact_usd", 0.0),
+            "total_sentiment_impact_usd": aggregated.get(
+                "total_sentiment_impact_usd", 0.0
+            ),
             "sentiment_dominant": aggregated.get("sentiment_dominant", False),
             # LLM sections
             "headline": llm_result.get("headline", ""),

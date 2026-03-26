@@ -161,29 +161,40 @@ def _ensure_prediction_background_refresh(persist_forecast: bool) -> None:
     """Kick off one cache refresh task if no refresh is currently running."""
     global _prediction_background_refresh_task
 
-    if _prediction_background_refresh_task and not _prediction_background_refresh_task.done():
+    if (
+        _prediction_background_refresh_task
+        and not _prediction_background_refresh_task.done()
+    ):
         return
 
     async def _refresh_task_runner():
         global _prediction_background_refresh_task
         try:
-            await _refresh_prediction_cache(force_refresh=True, persist_forecast=persist_forecast)
+            await _refresh_prediction_cache(
+                force_refresh=True, persist_forecast=persist_forecast
+            )
         except Exception as exc:
-            logger.warning("Background prediction cache refresh failed: %s", exc, exc_info=True)
+            logger.warning(
+                "Background prediction cache refresh failed: %s", exc, exc_info=True
+            )
         finally:
             _prediction_background_refresh_task = None
 
     _prediction_background_refresh_task = asyncio.create_task(_refresh_task_runner())
 
 
-async def _build_prediction_response(persist_forecast: bool = True) -> PredictionResponse:
+async def _build_prediction_response(
+    persist_forecast: bool = True,
+) -> PredictionResponse:
     """Run full prediction pipeline and build API response payload."""
     latest_prices = await run_in_threadpool(_sync_latest_prices_cached, 120)
     latest_prices["date"] = pd.to_datetime(latest_prices["date"])
     latest_prices = latest_prices.sort_values("date").reset_index(drop=True)
 
     # Generate predictions using the refreshed price history.
-    forecasts = await run_in_threadpool(partial(prediction_service.predict, prices=latest_prices))
+    forecasts = await run_in_threadpool(
+        partial(prediction_service.predict, prices=latest_prices)
+    )
 
     close_price = float(latest_prices["price"].iloc[-1])
     close_date = pd.to_datetime(latest_prices["date"].iloc[-1]).strftime("%Y-%m-%d")
@@ -326,7 +337,9 @@ async def _prediction_precompute_loop(stop_event: asyncio.Event):
         try:
             await _refresh_prediction_cache(force_refresh=True, persist_forecast=True)
         except Exception as exc:
-            logger.warning("Background prediction precompute failed: %s", exc, exc_info=True)
+            logger.warning(
+                "Background prediction precompute failed: %s", exc, exc_info=True
+            )
 
         try:
             await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
@@ -353,7 +366,9 @@ def _next_locked_update_iso(now_local: datetime | None = None) -> str:
 
     next_update = datetime.combine(
         local_now.date(),
-        time(hour=PREDICTION_LOCK_SCHEDULE_HOUR, minute=PREDICTION_LOCK_SCHEDULE_MINUTE),
+        time(
+            hour=PREDICTION_LOCK_SCHEDULE_HOUR, minute=PREDICTION_LOCK_SCHEDULE_MINUTE
+        ),
         tzinfo=tz,
     )
     if local_now >= next_update:
@@ -386,7 +401,9 @@ def _prediction_response_from_record(record: dict, market: dict) -> PredictionRe
     )
 
 
-def _is_locked_snapshot_stale(snapshot: dict, today_key: str, max_days_behind: int = 3) -> bool:
+def _is_locked_snapshot_stale(
+    snapshot: dict, today_key: str, max_days_behind: int = 3
+) -> bool:
     """Return True when locked snapshot appears too old for safe serving."""
     try:
         last_price_date_raw = snapshot.get("last_price_date")
@@ -421,7 +438,9 @@ def _sync_latest_prices(lookback_days: int = 120) -> pd.DataFrame:
             normalized["source"] = "yahoo_finance"
             return normalized.sort_values("date").reset_index(drop=True)
     except Exception as exc:
-        logger.warning("Failed to refresh live prices, falling back to stored data: %s", exc)
+        logger.warning(
+            "Failed to refresh live prices, falling back to stored data: %s", exc
+        )
         if not _cache_enabled():
             raise ValueError(f"Failed to refresh live prices: {exc}")
 
@@ -475,12 +494,16 @@ def _regenerate_explanation_payload_for_date(explanation_date: str) -> dict:
     snapshot = get_required_locked_prediction_snapshot(prediction_date=explanation_date)
     last_date = str(snapshot.get("last_price_date") or "")
     if not last_date:
-        raise HTTPException(status_code=503, detail="Locked prediction missing last_price_date")
+        raise HTTPException(
+            status_code=503, detail="Locked prediction missing last_price_date"
+        )
 
     prices_df = prices_df[prices_df["date"] <= pd.to_datetime(last_date)]
     prices_df = prices_df.sort_values("date").reset_index(drop=True)
     if prices_df.empty:
-        raise HTTPException(status_code=503, detail="No prices available up to locked last_price_date")
+        raise HTTPException(
+            status_code=503, detail="No prices available up to locked last_price_date"
+        )
 
     pred = {
         "last_price": float(snapshot.get("last_price", prices_df["price"].iloc[-1])),
@@ -495,7 +518,9 @@ def _regenerate_explanation_payload_for_date(explanation_date: str) -> dict:
     arima_exp = svc._explain_arima(prices_df)
     sent_exp = svc._explain_sentiment(article_date=last_date)
 
-    agg = svc._aggregate_explanations(arima_exp, ridge_exp, gru_exp, xgb_exp, sent_exp, pred)
+    agg = svc._aggregate_explanations(
+        arima_exp, ridge_exp, gru_exp, xgb_exp, sent_exp, pred
+    )
     prompt = svc._build_explanation_prompt(agg)
     llm_result = svc._generate_llm_narrative(prompt, agg)
     xai_payload = svc._build_xai_payload(explanation_date, agg, llm_result)
@@ -505,7 +530,9 @@ def _regenerate_explanation_payload_for_date(explanation_date: str) -> dict:
     else:
         explanation_text = llm_result.get("narrative", "")
         computation_time = _time.time() - t0
-        svc._store_explanation(explanation_date, agg, explanation_text, computation_time, xai_payload)
+        svc._store_explanation(
+            explanation_date, agg, explanation_text, computation_time, xai_payload
+        )
 
     xai_payload["computation_time_seconds"] = round(_time.time() - t0, 2)
     return xai_payload
@@ -556,14 +583,18 @@ def _aggregate_historical_features(df: pd.DataFrame, granularity: str) -> pd.Dat
             "price": working["price"].resample(rule).last(),
             "volume": working["volume"].resample(rule).sum(),
             "change_pct": working["change_pct"].resample(rule).mean(),
-            "daily_sentiment_decay": working["daily_sentiment_decay"].resample(rule).mean(),
+            "daily_sentiment_decay": working["daily_sentiment_decay"]
+            .resample(rule)
+            .mean(),
             "news_volume": working["news_volume"].resample(rule).sum(),
             "log_news_volume": working["log_news_volume"].resample(rule).mean(),
             "decayed_news_volume": working["decayed_news_volume"].resample(rule).mean(),
             "high_news_regime": working["high_news_regime"].resample(rule).max(),
         }
     )
-    aggregated = aggregated.dropna(subset=["price", "daily_sentiment_decay"]).reset_index()
+    aggregated = aggregated.dropna(
+        subset=["price", "daily_sentiment_decay"]
+    ).reset_index()
     return aggregated
 
 
@@ -571,7 +602,7 @@ def _aggregate_historical_features(df: pd.DataFrame, granularity: str) -> pd.Dat
 async def lifespan(app: FastAPI):
     """Load models and initialize database on startup."""
     logger.info("Starting application...")
-    
+
     # Initialize sentiment database
     try:
         await run_in_threadpool(init_database)
@@ -609,7 +640,9 @@ async def lifespan(app: FastAPI):
         init_prediction_scheduler()
         logger.info("Daily locked prediction scheduler initialized")
     except Exception as e:
-        logger.warning(f"Prediction scheduler initialization failed: {e}", exc_info=True)
+        logger.warning(
+            f"Prediction scheduler initialization failed: {e}", exc_info=True
+        )
 
     # Initialize explainability scheduler (must run in async context, not threadpool)
     try:
@@ -618,12 +651,14 @@ async def lifespan(app: FastAPI):
         init_scheduler()
         logger.info("Explainability scheduler initialized")
     except Exception as e:
-        logger.warning(f"Explainability scheduler initialization failed: {e}", exc_info=True)
+        logger.warning(
+            f"Explainability scheduler initialization failed: {e}", exc_info=True
+        )
 
     logger.info("Application startup completed successfully")
 
     yield
-    
+
     # Shutdown explainability scheduler
     try:
         from app.services.explainability_scheduler import shutdown_scheduler
@@ -655,7 +690,9 @@ app.add_middleware(
 )
 
 # Expose Prometheus /metrics endpoint
-Instrumentator().instrument(app).expose(app, include_in_schema=False, tags=["observability"])
+Instrumentator().instrument(app).expose(
+    app, include_in_schema=False, tags=["observability"]
+)
 
 
 @app.get("/", include_in_schema=False)
@@ -677,7 +714,7 @@ async def health_check():
     if market is None:
         market = await run_in_threadpool(get_market_status)
         _cache_market_status(market)
-    
+
     return HealthResponse(
         status="healthy",
         models_loaded=model_artifacts._loaded,
@@ -705,7 +742,9 @@ async def get_prices():
     Falls back to stored prices if the live refresh fails.
     """
     try:
-        all_prices = await run_in_threadpool(partial(_sync_latest_prices_cached, lookback_days=60))
+        all_prices = await run_in_threadpool(
+            partial(_sync_latest_prices_cached, lookback_days=60)
+        )
         all_prices["date"] = pd.to_datetime(all_prices["date"])
         all_prices = all_prices.sort_values("date").reset_index(drop=True)
         prices = all_prices.tail(30)  # Get last 30 days
@@ -731,7 +770,10 @@ async def get_prices():
     response_model=NewsArticlesResponse,
     responses={
         400: {"model": ErrorResponse, "description": "Invalid date format"},
-        500: {"model": ErrorResponse, "description": "Server error fetching news articles"},
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error fetching news articles",
+        },
     },
 )
 async def get_news(
@@ -757,7 +799,9 @@ async def get_news(
         if article_date is not None:
             articles = await run_in_threadpool(get_news_articles, article_date)
         else:
-            articles = await run_in_threadpool(partial(get_recent_news_articles, days=days))
+            articles = await run_in_threadpool(
+                partial(get_recent_news_articles, days=days)
+            )
         latest_article_date = articles[0]["article_date"] if articles else None
 
         return NewsArticlesResponse(
@@ -774,11 +818,15 @@ async def get_news(
         logger.error(f"Error fetching news articles: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get(
     "/historical/prices",
     response_model=HistoricalPricesResponse,
     responses={
-        500: {"model": ErrorResponse, "description": "Server error fetching historical prices"}
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error fetching historical prices",
+        }
     },
 )
 async def get_historical_prices(
@@ -955,7 +1003,7 @@ async def predict_now():
         if market is None:
             market = await run_in_threadpool(get_market_status)
             _cache_market_status(market)
-        
+
         today_key = _current_prediction_date_local()
         snapshot = await run_in_threadpool(get_locked_prediction_snapshot, today_key)
 
@@ -978,7 +1026,9 @@ async def predict_now():
                     refresh_result,
                 )
 
-            snapshot = await run_in_threadpool(get_locked_prediction_snapshot, today_key)
+            snapshot = await run_in_threadpool(
+                get_locked_prediction_snapshot, today_key
+            )
 
         if snapshot and not _is_locked_snapshot_stale(snapshot, today_key):
             return _prediction_response_from_record(snapshot, market)
@@ -1086,7 +1136,7 @@ async def predict_from_uploaded_excel(
             file_bytes,
             file.filename,
         )
-        
+
         # Try cached market status first to avoid hitting Yahoo Finance API repeatedly
         market = _get_cached_market_status()
         if market is None:
@@ -1306,7 +1356,9 @@ async def scraper_run(
         target_date: Optional YYYY-MM-DD date to scrape. Defaults to yesterday.
     """
     if SCRAPER_API_KEY and x_scraper_key != SCRAPER_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-Scraper-Key header")
+        raise HTTPException(
+            status_code=401, detail="Invalid or missing X-Scraper-Key header"
+        )
     # Validate date format and value if provided
     validated_date = None
     if target_date is not None:
@@ -1314,13 +1366,12 @@ async def scraper_run(
             datetime.strptime(target_date, "%Y-%m-%d")
             validated_date = target_date
         except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=INVALID_DATE_DETAIL
-            )
-    
+            raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
+
     try:
-        result = await run_in_threadpool(partial(run_scraper_now, target_date=validated_date))
+        result = await run_in_threadpool(
+            partial(run_scraper_now, target_date=validated_date)
+        )
         return result
     except Exception as e:
         logger.error("Manual scraper run failed", exc_info=True)
@@ -1398,7 +1449,9 @@ async def backfill_news_images(
 ):
     """Backfill missing image_url values for stored news articles using Pexels."""
     if SCRAPER_API_KEY and x_scraper_key != SCRAPER_API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-Scraper-Key header")
+        raise HTTPException(
+            status_code=401, detail="Invalid or missing X-Scraper-Key header"
+        )
 
     try:
         validated_start = validate_backfill_date(start_date) if start_date else None
@@ -1407,7 +1460,9 @@ async def backfill_news_images(
         raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
 
     if validated_start and validated_end and validated_start > validated_end:
-        raise HTTPException(status_code=400, detail="start_date must be less than or equal to end_date")
+        raise HTTPException(
+            status_code=400, detail="start_date must be less than or equal to end_date"
+        )
 
     try:
         return await run_in_threadpool(
@@ -1466,20 +1521,22 @@ async def _get_or_trigger_explanation(explanation_date: str) -> dict | None:
     "/explain",
     response_model=None,  # Manually serialize to avoid import ordering issues
     responses={
-        200: {
-            "model": dict,
-            "description": "Explanation result"
-        },
+        200: {"model": dict, "description": "Explanation result"},
         400: {"model": ErrorResponse, "description": "Invalid date format"},
         503: {
             "model": ErrorResponse,
             "description": "Explanation not yet computed for today (job hasn't run)",
         },
-        500: {"model": ErrorResponse, "description": "Server error retrieving explanation"},
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error retrieving explanation",
+        },
     },
 )
 async def get_explanation(
-    explanation_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    explanation_date: Annotated[
+        str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    ] = None,
 ):
     """
     Retrieve stored explainability result for a given date.
@@ -1487,7 +1544,7 @@ async def get_explanation(
     If no explanation_date is provided, defaults to today.
     The explanation is pre-computed once per day (schedule controlled by
     EXPLAINABILITY_SCHEDULE_* env vars) and cached in the database.
-    
+
     If the job hasn't run yet for today, returns 503 with a retry message.
 
     Args:
@@ -1586,11 +1643,16 @@ async def get_explanation(
         200: {"description": "Regenerated explanation"},
         400: {"model": ErrorResponse, "description": "Invalid date"},
         503: {"model": ErrorResponse, "description": "Prices not available"},
-        500: {"model": ErrorResponse, "description": "Server error regenerating explanation"},
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error regenerating explanation",
+        },
     },
 )
 async def regenerate_explanation(
-    explanation_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    explanation_date: Annotated[
+        str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    ] = None,
 ):
     """
     Force-regenerate the xai_payload for a given date (default: today).

@@ -27,7 +27,9 @@ def backfill_news_image_urls(
     init_database()
 
     if reset:
-        cleared = clear_news_article_image_urls(start_date=start_date, end_date=end_date)
+        cleared = clear_news_article_image_urls(
+            start_date=start_date, end_date=end_date
+        )
         logger.info(
             "Reset %d existing image_url values (date range: %s -> %s)",
             cleared,
@@ -87,7 +89,9 @@ def backfill_news_image_urls(
                 )
         except Exception as exc:
             errors += 1
-            logger.warning("Failed row id=%s title=%r: %s", article_id, title[:100], exc)
+            logger.warning(
+                "Failed row id=%s title=%r: %s", article_id, title[:100], exc
+            )
 
     return {
         "start_date": start_date,

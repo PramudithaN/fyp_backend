@@ -67,8 +67,12 @@ class TestSentimentOperations:
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.description = [
-            ("date",), ("daily_sentiment",), ("news_volume",),
-            ("log_news_volume",), ("decayed_news_volume",), ("high_news_regime",),
+            ("date",),
+            ("daily_sentiment",),
+            ("news_volume",),
+            ("log_news_volume",),
+            ("decayed_news_volume",),
+            ("high_news_regime",),
         ]
         mock_cursor.fetchall.return_value = [
             ("2026-03-01", 0.5, 10, 2.3, 8.5, 1),
@@ -178,8 +182,12 @@ class TestSentimentOperations:
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
         mock_cursor.description = [
-            ("date",), ("daily_sentiment",), ("news_volume",),
-            ("log_news_volume",), ("decayed_news_volume",), ("high_news_regime",),
+            ("date",),
+            ("daily_sentiment",),
+            ("news_volume",),
+            ("log_news_volume",),
+            ("decayed_news_volume",),
+            ("high_news_regime",),
         ]
         mock_cursor.fetchall.return_value = [
             ("2026-03-01", 0.5, 10, 2.3, 8.5, 1),

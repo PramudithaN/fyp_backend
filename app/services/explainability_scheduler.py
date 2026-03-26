@@ -115,7 +115,7 @@ def run_daily_explainability_job() -> None:
         from app.services.explainability import explainability_service
 
         result = explainability_service.run_daily_job()
-        
+
         if result.get("status") == "deferred":
             logger.warning(
                 f"Explainability job deferred: {result.get('reason')}. "

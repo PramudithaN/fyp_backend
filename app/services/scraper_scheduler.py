@@ -58,7 +58,9 @@ def _run_daily_scrape(target_date: str = None) -> Dict[str, Any]:
 
         if articles:
             # Step 2: Compute sentiment from scraped articles (also get per-article details)
-            features, enriched_articles = compute_sentiment_features_with_articles(articles)
+            features, enriched_articles = compute_sentiment_features_with_articles(
+                articles
+            )
             result["sentiment_value"] = features["daily_sentiment_decay"]
 
             # Step 3a: Store per-article data in database
@@ -75,27 +77,21 @@ def _run_daily_scrape(target_date: str = None) -> Dict[str, Any]:
             )
             logger.info(
                 "[Scheduler] Stored sentiment: %.4f from %d articles",
-                features['daily_sentiment_decay'], len(articles)
+                features["daily_sentiment_decay"],
+                len(articles),
             )
         else:
             # Step 2b: No articles → apply sentiment decay
-            logger.warning(
-                "[Scheduler] No articles found, applying sentiment decay"
-            )
+            logger.warning("[Scheduler] No articles found, applying sentiment decay")
             decay_result = sentiment_service.apply_no_news_decay(target_date)
             result["decay_applied"] = True
             result["sentiment_value"] = decay_result.get("decayed_sentiment", 0.0)
-            logger.info(
-                "[Scheduler] Applied decay: %.4f",
-                result['sentiment_value']
-            )
+            logger.info("[Scheduler] Applied decay: %.4f", result["sentiment_value"])
 
         result["status"] = "success"
 
     except Exception as e:
-        logger.error(
-            "[Scheduler] Scrape pipeline failed", exc_info=True
-        )
+        logger.error("[Scheduler] Scrape pipeline failed", exc_info=True)
         result["status"] = "error"
         result["error"] = str(e)
 
@@ -253,7 +249,8 @@ def backfill_history(
 
     logger.info(
         "[Backfill] Starting backfill: %d days, max %d pages/site",
-        days_back, max_pages_per_site
+        days_back,
+        max_pages_per_site,
     )
     started_at = datetime.now().isoformat()
 
@@ -296,8 +293,10 @@ def backfill_history(
 
     logger.info(
         "[Backfill] Complete: %d filled, %d decayed, %d skipped, %d errors",
-        summary['days_filled'], summary['days_decayed'],
-        summary['days_skipped'], summary['days_errored']
+        summary["days_filled"],
+        summary["days_decayed"],
+        summary["days_skipped"],
+        summary["days_errored"],
     )
     return summary
 

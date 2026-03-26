@@ -68,7 +68,9 @@ def _to_yyyymmdd(ts: pd.Timestamp) -> str:
     return pd.to_datetime(ts).strftime("%Y-%m-%d")
 
 
-def _resolve_previous_trading_close(prices: pd.DataFrame, prediction_date: str) -> tuple[str, float]:
+def _resolve_previous_trading_close(
+    prices: pd.DataFrame, prediction_date: str
+) -> tuple[str, float]:
     """
     Select the latest available trading close strictly before prediction_date.
     """
@@ -90,7 +92,9 @@ def _resolve_previous_trading_close(prices: pd.DataFrame, prediction_date: str) 
     return _to_yyyymmdd(row["date"]), round(float(row["price"]), 2)
 
 
-def _resolve_stable_close(prices: pd.DataFrame, local_now: datetime) -> tuple[str, float]:
+def _resolve_stable_close(
+    prices: pd.DataFrame, local_now: datetime
+) -> tuple[str, float]:
     """
     Select the latest stable daily close based on Yahoo session timing.
 
@@ -109,12 +113,16 @@ def _resolve_stable_close(prices: pd.DataFrame, local_now: datetime) -> tuple[st
     session = get_regular_session_window()
     if not session:
         prediction_date = local_now.strftime("%Y-%m-%d")
-        return _resolve_previous_trading_close(prices=working, prediction_date=prediction_date)
+        return _resolve_previous_trading_close(
+            prices=working, prediction_date=prediction_date
+        )
 
     exchange_tz = ZoneInfo(str(session["exchange_timezone"]))
     now_exchange = local_now.astimezone(exchange_tz)
     regular_end = session["regular_end"]
-    stable_after = regular_end + timedelta(minutes=max(0, int(PREDICTION_CLOSE_LOCK_BUFFER_MINUTES)))
+    stable_after = regular_end + timedelta(
+        minutes=max(0, int(PREDICTION_CLOSE_LOCK_BUFFER_MINUTES))
+    )
     session_date = pd.Timestamp(regular_end.date())
 
     if now_exchange < stable_after:
@@ -159,9 +167,13 @@ def run_daily_prediction_job(now_local: datetime | None = None) -> dict:
         now_target=local_now,
     )
 
-    logger.info("Daily locked prediction job started for prediction_date=%s", prediction_date)
+    logger.info(
+        "Daily locked prediction job started for prediction_date=%s", prediction_date
+    )
 
-    prices = fetch_latest_prices(lookback_days=180, end_date=local_now.replace(tzinfo=None))
+    prices = fetch_latest_prices(
+        lookback_days=180, end_date=local_now.replace(tzinfo=None)
+    )
     based_on_price_date, based_on_price = _resolve_stable_close(
         prices=prices,
         local_now=local_now,
@@ -170,7 +182,9 @@ def run_daily_prediction_job(now_local: datetime | None = None) -> dict:
     # Model receives historical prices up to and including the based-on close date.
     model_prices = prices.copy()
     model_prices["date"] = pd.to_datetime(model_prices["date"]).dt.tz_localize(None)
-    model_prices = model_prices[model_prices["date"] <= pd.to_datetime(based_on_price_date)]
+    model_prices = model_prices[
+        model_prices["date"] <= pd.to_datetime(based_on_price_date)
+    ]
     model_prices = model_prices.sort_values("date").reset_index(drop=True)
 
     if model_prices.empty:

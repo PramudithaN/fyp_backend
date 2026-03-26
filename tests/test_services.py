@@ -195,7 +195,9 @@ class TestPriceFetcher:
         assert str(df.index.tz) == "UTC"
         assert "timestamp_local" in df.columns
         assert str(df["timestamp_local"].dt.tz) == "Asia/Colombo"
-        assert {"timestamp", "open", "high", "low", "close", "volume"}.issubset(df.columns)
+        assert {"timestamp", "open", "high", "low", "close", "volume"}.issubset(
+            df.columns
+        )
         assert len(df) == 2
 
     def test_parse_yahoo_chart_intraday_missing_strategy_drop(self):
@@ -251,7 +253,9 @@ class TestPriceFetcher:
             }
         }
 
-        df = parse_yahoo_chart_intraday(payload, local_tz=None, missing_strategy="ffill")
+        df = parse_yahoo_chart_intraday(
+            payload, local_tz=None, missing_strategy="ffill"
+        )
         assert len(df) == 2
         assert float(df.iloc[1]["open"]) == pytest.approx(80.1)
 
@@ -262,7 +266,10 @@ class TestPriceFetcher:
 
         # Mock Yahoo Finance ticker to return REGULAR (market open)
         with patch("app.services.price_fetcher.yf.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"marketState": "REGULAR", "exchangeTimezoneName": "UTC"}
+            mock_ticker.return_value.info = {
+                "marketState": "REGULAR",
+                "exchangeTimezoneName": "UTC",
+            }
             market = get_market_status()
             assert market["is_open"] is True
             assert market["market_state"] == "REGULAR"
@@ -274,7 +281,10 @@ class TestPriceFetcher:
 
         # Mock Yahoo Finance ticker to return CLOSED
         with patch("app.services.price_fetcher.yf.Ticker") as mock_ticker:
-            mock_ticker.return_value.info = {"marketState": "CLOSED", "exchangeTimezoneName": "UTC"}
+            mock_ticker.return_value.info = {
+                "marketState": "CLOSED",
+                "exchangeTimezoneName": "UTC",
+            }
             market = get_market_status()
             assert market["is_open"] is False
             assert market["market_state"] == "CLOSED"
@@ -314,7 +324,9 @@ class TestPriceFetcher:
         with patch("app.services.price_fetcher.yf.Ticker") as mock_ticker:
             mock_ticker.side_effect = Exception("API unavailable")
             # 2026-03-16 23:00 at UTC+05:30 is 17:30 UTC (Monday), inside trading hours.
-            aware_local = datetime(2026, 3, 16, 23, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            aware_local = datetime(
+                2026, 3, 16, 23, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))
+            )
             market = get_market_status(aware_local)
             assert market["is_open"] is True
             assert "FALLBACK" in market["timezone_info"]
@@ -489,7 +501,9 @@ class TestNewsFetcher:
         assert "natural_gas" in keywords
         assert "renewable_energy" in keywords
 
-    def test_build_image_search_query_keeps_oil_and_energy_context_for_natural_gas(self):
+    def test_build_image_search_query_keeps_oil_and_energy_context_for_natural_gas(
+        self,
+    ):
         """Natural gas headlines should retain domain context in the primary query."""
         from app.services.news_fetcher import _build_image_search_query
 
@@ -527,7 +541,9 @@ class TestNewsFetcher:
         assert "venezuela oil refinery" in queries
         assert "venezuela crude oil" in queries
 
-    def test_build_image_search_query_prefers_shipping_visuals_for_route_headlines(self):
+    def test_build_image_search_query_prefers_shipping_visuals_for_route_headlines(
+        self,
+    ):
         """Shipping headlines should search for tanker and port imagery."""
         from app.services.news_fetcher import _build_image_search_query
 
@@ -580,7 +596,9 @@ class TestNewsFetcher:
 
         assert idx_first == idx_repeat, "Index must be deterministic for the same title"
         assert all(0 <= i < 15 for i in indices), "Indices must be within [0, n_photos)"
-        assert len(set(indices)) > 1, "Different titles should produce different indices"
+        assert (
+            len(set(indices)) > 1
+        ), "Different titles should produce different indices"
 
     def test_different_titles_use_different_photo_indices(self):
         """Articles sharing the same Pexels query must pick different photos via index."""
@@ -592,11 +610,16 @@ class TestNewsFetcher:
         idx_a = _stable_photo_index_for_title(title_a, 15)
         idx_b = _stable_photo_index_for_title(title_b, 15)
 
-        assert idx_a != idx_b, "Distinct headlines must not collide on the same photo index"
+        assert (
+            idx_a != idx_b
+        ), "Distinct headlines must not collide on the same photo index"
 
     def test_resolve_image_url_uses_title_stable_page(self):
         """Resolver should pass a deterministic page (not always page 1) to Pexels lookups."""
-        from app.services.news_fetcher import _resolve_image_url_from_headline, _stable_page_for_title
+        from app.services.news_fetcher import (
+            _resolve_image_url_from_headline,
+            _stable_page_for_title,
+        )
 
         title = "Iraq cuts Basra oil output after southern exports halt"
         expected_page = _stable_page_for_title(title, max_pages=5)
@@ -606,7 +629,10 @@ class TestNewsFetcher:
             captured_pages.append(page)
             return [f"https://images.example.com/{query.replace(' ', '_')}/{page}.jpg"]
 
-        with patch("app.services.news_fetcher._fetch_pexels_image_list", side_effect=_mock_fetch):
+        with patch(
+            "app.services.news_fetcher._fetch_pexels_image_list",
+            side_effect=_mock_fetch,
+        ):
             resolved = _resolve_image_url_from_headline(
                 title=title,
                 cache={},

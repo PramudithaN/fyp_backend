@@ -39,12 +39,16 @@ NEWSAPI_KEY = CONFIG_NEWSAPI_KEY  # From config.py
 # Oil-related search terms (simplified for better results)
 OIL_SEARCH_QUERY = "oil price OR crude oil OR brent OR OPEC"
 PEXELS_SEARCH_URL = "https://api.pexels.com/v1/search"
-MAX_PEXELS_LOOKUPS_PER_RUN = 200   # raised: 200 Pexels lookups per scrape run (free tier allows 200/hour)
+MAX_PEXELS_LOOKUPS_PER_RUN = (
+    200  # raised: 200 Pexels lookups per scrape run (free tier allows 200/hour)
+)
 DEFAULT_IMAGE_QUERY = "energy infrastructure"
 DEFAULT_OIL_QUERY = "oil industry"
 DEFAULT_REFINERY_QUERY = "oil refinery"
 DEFAULT_CRUDE_QUERY = "crude oil"
-DEFAULT_ARTICLE_IMAGE_URL = "https://images.pexels.com/photos/257700/pexels-photo-257700.jpeg"
+DEFAULT_ARTICLE_IMAGE_URL = (
+    "https://images.pexels.com/photos/257700/pexels-photo-257700.jpeg"
+)
 
 HEADLINE_STOP_WORDS = {
     "the",
@@ -118,12 +122,29 @@ DOMAIN_VISUAL_MAP = [
         ["flood damage", "storm destruction"],
     ),
     (
-        {"election", "vote", "ballot", "candidate", "polling", "democrat", "republican"},
+        {
+            "election",
+            "vote",
+            "ballot",
+            "candidate",
+            "polling",
+            "democrat",
+            "republican",
+        },
         "voting booth ballot box",
         ["election campaign rally", "democracy vote"],
     ),
     (
-        {"war", "military", "troops", "soldier", "attack", "conflict", "invasion", "airstrike"},
+        {
+            "war",
+            "military",
+            "troops",
+            "soldier",
+            "attack",
+            "conflict",
+            "invasion",
+            "airstrike",
+        },
         "military soldiers deployment",
         ["conflict zone", "army troops"],
     ),
@@ -138,17 +159,41 @@ DOMAIN_VISUAL_MAP = [
         ["vaccine syringe", "hospital healthcare"],
     ),
     (
-        {"ai", "artificial intelligence", "machine learning", "robot", "automation", "chatgpt", "openai"},
+        {
+            "ai",
+            "artificial intelligence",
+            "machine learning",
+            "robot",
+            "automation",
+            "chatgpt",
+            "openai",
+        },
         "artificial intelligence technology",
         ["robot automation", "computer technology"],
     ),
     (
-        {"semiconductor", "chip", "microchip", "processor", "nvidia", "intel", "apple silicon"},
+        {
+            "semiconductor",
+            "chip",
+            "microchip",
+            "processor",
+            "nvidia",
+            "intel",
+            "apple silicon",
+        },
         "semiconductor microchip closeup",
         ["computer processor", "technology chip"],
     ),
     (
-        {"climate", "global warming", "carbon", "emissions", "renewable", "solar", "wind energy"},
+        {
+            "climate",
+            "global warming",
+            "carbon",
+            "emissions",
+            "renewable",
+            "solar",
+            "wind energy",
+        },
         "climate change renewable energy",
         ["solar panels wind turbines", "green energy"],
     ),
@@ -178,7 +223,16 @@ DOMAIN_VISUAL_MAP = [
         ["corporate meeting boardroom", "business merger"],
     ),
     (
-        {"hospital", "surgery", "cancer", "drug", "medicine", "treatment", "patient", "health"},
+        {
+            "hospital",
+            "surgery",
+            "cancer",
+            "drug",
+            "medicine",
+            "treatment",
+            "patient",
+            "health",
+        },
         "hospital medical care",
         ["doctor patient healthcare", "medical treatment"],
     ),
@@ -221,7 +275,15 @@ DOMAIN_VISUAL_MAP = [
 
 ORIENTATION_HINTS = {
     "landscape": {"aerial", "panorama", "skyline", "field", "crowd", "city"},
-    "portrait": {"person", "leader", "president", "ceo", "doctor", "soldier", "protester"},
+    "portrait": {
+        "person",
+        "leader",
+        "president",
+        "ceo",
+        "doctor",
+        "soldier",
+        "protester",
+    },
 }
 
 yake_extractor = yake.KeywordExtractor(
@@ -233,11 +295,47 @@ yake_extractor = yake.KeywordExtractor(
 )
 
 STOP_WORDS = {
-    "say", "says", "said", "new", "first", "last", "year", "years",
-    "week", "month", "day", "time", "amid", "after", "report", "reports",
-    "billion", "million", "percent", "according", "could", "would", "may",
-    "make", "get", "use", "take", "give", "come", "go", "set", "call",
-    "show", "us", "u.s", "uk", "world", "official", "plan", "plans", "move",
+    "say",
+    "says",
+    "said",
+    "new",
+    "first",
+    "last",
+    "year",
+    "years",
+    "week",
+    "month",
+    "day",
+    "time",
+    "amid",
+    "after",
+    "report",
+    "reports",
+    "billion",
+    "million",
+    "percent",
+    "according",
+    "could",
+    "would",
+    "may",
+    "make",
+    "get",
+    "use",
+    "take",
+    "give",
+    "come",
+    "go",
+    "set",
+    "call",
+    "show",
+    "us",
+    "u.s",
+    "uk",
+    "world",
+    "official",
+    "plan",
+    "plans",
+    "move",
 }
 
 KEYWORD_SYNONYMS = {
@@ -427,7 +525,9 @@ def _build_query_from_terms(terms: List[str], max_words: int = 6) -> str:
     return " ".join(parts)
 
 
-def _headline_specific_terms(title: str, keywords: List[str], max_terms: int = 5) -> List[str]:
+def _headline_specific_terms(
+    title: str, keywords: List[str], max_terms: int = 5
+) -> List[str]:
     """Extract additional non-generic terms to specialize image queries per headline."""
     generic_terms = {
         "oil",
@@ -505,7 +605,9 @@ def _build_headline_specific_query_variants(
 
 
 def _format_query_tokens(tokens: List[str]) -> str:
-    return " ".join(token.replace("_", " ") for token in _dedupe_preserve_order(tokens)).strip()
+    return " ".join(
+        token.replace("_", " ") for token in _dedupe_preserve_order(tokens)
+    ).strip()
 
 
 def _ordered_phrase_matches(clean_title: str) -> List[str]:
@@ -542,7 +644,9 @@ def _rank_visual_themes(keywords: List[str]) -> List[str]:
         if theme and theme not in themes:
             themes.append(theme)
 
-    if not themes and (set(keywords) & GEOPOLITICAL_TERMS or any(k in LOCATION_TERMS for k in keywords)):
+    if not themes and (
+        set(keywords) & GEOPOLITICAL_TERMS or any(k in LOCATION_TERMS for k in keywords)
+    ):
         themes.append("oil")
 
     if not themes:
@@ -552,7 +656,11 @@ def _rank_visual_themes(keywords: List[str]) -> List[str]:
 
 
 def _expand_query_templates(location: str, templates: List[str]) -> List[str]:
-    prefixed = [f"{location.replace('_', ' ')} {template}" for template in templates] if location else []
+    prefixed = (
+        [f"{location.replace('_', ' ')} {template}" for template in templates]
+        if location
+        else []
+    )
     return [*prefixed, *templates]
 
 
@@ -568,7 +676,9 @@ def _build_structured_image_queries(keywords: List[str]) -> List[str]:
             continue
 
         include_location = bool(location) and (index == 0 or theme == "oil")
-        queries.extend(_expand_query_templates(location if include_location else "", templates))
+        queries.extend(
+            _expand_query_templates(location if include_location else "", templates)
+        )
 
     if location and "oil" not in themes:
         queries.extend(_expand_query_templates(location, THEME_QUERY_TEMPLATES["oil"]))
@@ -667,11 +777,13 @@ def _build_fallback_image_queries(title: str) -> List[str]:
             domain_candidates.append(DEFAULT_OIL_QUERY)
 
         domain_candidates.extend(BROAD_FALLBACK_IMAGE_QUERIES)
-        return _dedupe_preserve_order([
-            candidate.strip().lower()
-            for candidate in domain_candidates
-            if candidate and candidate.strip()
-        ])
+        return _dedupe_preserve_order(
+            [
+                candidate.strip().lower()
+                for candidate in domain_candidates
+                if candidate and candidate.strip()
+            ]
+        )
 
     candidates = list(structured_queries)
     if candidates:
@@ -686,10 +798,14 @@ def _build_fallback_image_queries(title: str) -> List[str]:
 
     # Broad fallbacks for hard-to-match headlines.
     candidates.extend(BROAD_FALLBACK_IMAGE_QUERIES)
-    return _dedupe_preserve_order([candidate.strip().lower() for candidate in candidates if candidate.strip()])
+    return _dedupe_preserve_order(
+        [candidate.strip().lower() for candidate in candidates if candidate.strip()]
+    )
 
 
-def _get_cached_image_query_result(query: str, cache: Optional[Dict[str, str]]) -> Optional[str]:
+def _get_cached_image_query_result(
+    query: str, cache: Optional[Dict[str, str]]
+) -> Optional[str]:
     if cache is None or query not in cache:
         return None
     return cache[query]
@@ -848,7 +964,9 @@ def _fetch_pexels_image_list(
     for different articles without making additional API calls.
     """
     if not PEXELS_API_KEY:
-        logger.debug("PEXELS_API_KEY not set — skipping image lookup for query: %s", query)
+        logger.debug(
+            "PEXELS_API_KEY not set — skipping image lookup for query: %s", query
+        )
         return []
 
     import requests
@@ -1124,7 +1242,7 @@ def _extract_texts_from_articles(articles: List[Dict[str, Any]]) -> List[str]:
 def _analyze_with_finbert(texts: List[str]) -> Optional[List[float]]:
     """
     Attempt to analyze sentiments using FinBERT batch processing.
-    
+
     Returns:
         List of sentiment scores if successful, None if unavailable/failed.
     """
@@ -1139,6 +1257,7 @@ def _analyze_with_finbert(texts: List[str]) -> Optional[List[float]]:
             return None
 
         import time
+
         logger.info(f"Analyzing {len(texts)} articles with custom FinBERT...")
         t_sent = time.time()
         sentiments = analyze_batch_finbert(texts)
@@ -1165,7 +1284,9 @@ def _analyze_with_simple_sentiment(articles: List[Dict[str, Any]]) -> List[float
     return sentiments
 
 
-def _compute_sentiment_dict(sentiments: List[float], news_volume: int) -> Dict[str, Any]:
+def _compute_sentiment_dict(
+    sentiments: List[float], news_volume: int
+) -> Dict[str, Any]:
     """Compute sentiment feature dictionary from sentiment scores and volume."""
     log_news_volume = math.log(news_volume + 1)
     daily_sentiment = float(np.mean(sentiments)) if sentiments else 0.0
@@ -1240,7 +1361,6 @@ def compute_sentiment_features(
     return _compute_sentiment_dict(all_sentiments, len(articles))
 
 
-
 def _compute_sentiments_for_articles(
     articles: List[Dict[str, Any]],
     use_finbert: bool,
@@ -1280,7 +1400,9 @@ def _build_enriched_articles(
     enriched: List[Dict[str, Any]] = []
     for idx, article in enumerate(articles):
         score = all_sentiments[idx] if idx < len(all_sentiments) else 0.0
-        image_url = image_urls[idx] if idx < len(image_urls) else DEFAULT_ARTICLE_IMAGE_URL
+        image_url = (
+            image_urls[idx] if idx < len(image_urls) else DEFAULT_ARTICLE_IMAGE_URL
+        )
 
         enriched.append(
             {
@@ -1324,11 +1446,15 @@ def compute_sentiment_features_with_articles(
         )
 
     use_finbert = (
-        (sentiment_mode == "finbert") if sentiment_mode else (SENTIMENT_MODE == "finbert")
+        (sentiment_mode == "finbert")
+        if sentiment_mode
+        else (SENTIMENT_MODE == "finbert")
     )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        sentiments_future = executor.submit(_compute_sentiments_for_articles, articles, use_finbert)
+        sentiments_future = executor.submit(
+            _compute_sentiments_for_articles, articles, use_finbert
+        )
         images_future = executor.submit(_resolve_image_urls_for_articles, articles)
 
         all_sentiments = sentiments_future.result()

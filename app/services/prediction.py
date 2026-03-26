@@ -99,14 +99,17 @@ class PredictionService:
     def _handle_price_data(self, prices: pd.DataFrame = None) -> pd.DataFrame:
         """Handle price data loading and validation. Fetches from database instead of external API."""
         if prices is None:
-            logger.info("Auto-fetching extended price history from database (120 days for lookback safety margin)...")
+            logger.info(
+                "Auto-fetching extended price history from database (120 days for lookback safety margin)..."
+            )
             from app.database import get_prices
+
             return get_prices(days=120)
-        
+
         logger.info(f"Using provided price data ({len(prices)} points)")
         if "date" not in prices.columns or "price" not in prices.columns:
             raise ValueError("Price DataFrame must have 'date' and 'price' columns")
-        
+
         prices["date"] = pd.to_datetime(prices["date"]).dt.tz_localize(None)
         return prices.sort_values("date").reset_index(drop=True)
 
@@ -130,8 +133,10 @@ class PredictionService:
                     f"Loaded {len(sentiment_df)} days of sentiment data (up to {price_end_date.date()})"
                 )
                 return sentiment_service.apply_cross_day_decay(sentiment_df)
-            
-            logger.warning("No sentiment data for this date range - using price-only mode")
+
+            logger.warning(
+                "No sentiment data for this date range - using price-only mode"
+            )
             return None
         except Exception as e:
             logger.warning(f"Failed to load sentiment: {e}. Using price-only mode.")
@@ -142,10 +147,10 @@ class PredictionService:
     ) -> pd.DataFrame:
         """Engineer features and validate data quality."""
         df = engineer_all_features(prices, sentiment_df=sentiment_df)
-        
+
         # Forward-fill and backward-fill NaN values from lagged features and rolling calculations
         df = df.ffill().bfill()
-        
+
         # Take the last lookback rows to ensure we have enough data
         df = df.tail(self.artifacts.lookback)
 
@@ -304,7 +309,9 @@ class PredictionService:
     def _determine_trend_strength(self, price_momentum: float) -> float:
         """Determine trend strength from price momentum."""
         if price_momentum < -0.05:
-            logger.info("STRONG DOWNTREND detected: %.1f%% in 7 days", price_momentum * 100)
+            logger.info(
+                "STRONG DOWNTREND detected: %.1f%% in 7 days", price_momentum * 100
+            )
             return -2.0
         if price_momentum < -0.03:
             return -1.0
@@ -322,7 +329,11 @@ class PredictionService:
         norm_sent = np.sign(signals["sentiment_momentum"]) * min(
             abs(signals["sentiment_momentum"]), 1.0
         )
-        norm_price = np.sign(signals["price_drop_7d"]) * min(abs(signals["price_drop_7d"]), 0.1) * 10
+        norm_price = (
+            np.sign(signals["price_drop_7d"])
+            * min(abs(signals["price_drop_7d"]), 0.1)
+            * 10
+        )
 
         divergence = norm_sent - norm_price
 
@@ -353,9 +364,13 @@ class PredictionService:
         signals["extreme_sentiment"] = z_score
 
         if z_score < -1.5:
-            logger.info(f"CONTRARIAN SIGNAL: Extreme negative sentiment (z={z_score:.2f})")
+            logger.info(
+                f"CONTRARIAN SIGNAL: Extreme negative sentiment (z={z_score:.2f})"
+            )
         elif z_score > 1.5:
-            logger.info(f"CONTRARIAN SIGNAL: Extreme positive sentiment (z={z_score:.2f})")
+            logger.info(
+                f"CONTRARIAN SIGNAL: Extreme positive sentiment (z={z_score:.2f})"
+            )
 
     def _calculate_reversal_probability(self, signals: dict) -> None:
         """Calculate reversal probability and adjustment factor."""
@@ -366,7 +381,9 @@ class PredictionService:
 
         # Determine adjustment based on signal confidence
         confirming_signals = self._count_confirming_signals(signals)
-        adj_per_unit = self._determine_adjustment_rate(confirming_signals, signals["reversal_probability"])
+        adj_per_unit = self._determine_adjustment_rate(
+            confirming_signals, signals["reversal_probability"]
+        )
 
         signals["adjustment_factor"] = np.clip(
             signals["reversal_probability"] * adj_per_unit, -0.010, 0.010
@@ -479,7 +496,9 @@ class PredictionService:
             logger.info(f"MEDIUM CONFIDENCE: {confirming_signals} signals confirming")
             return 0.004
         if abs(prob) > 0.2:
-            logger.info(f"LOW CONFIDENCE: Only {confirming_signals} signals, skipping adjustment")
+            logger.info(
+                f"LOW CONFIDENCE: Only {confirming_signals} signals, skipping adjustment"
+            )
         return 0.0
 
     def _apply_sentiment_adjustment(
@@ -500,7 +519,9 @@ class PredictionService:
             decay = np.exp(-decay_rate * i)
             adjusted_returns[i] += adjustment * decay
 
-        total_adj = sum(adjustment * np.exp(-decay_rate * i) for i in range(len(adjusted_returns)))
+        total_adj = sum(
+            adjustment * np.exp(-decay_rate * i) for i in range(len(adjusted_returns))
+        )
         logger.info(
             f"Applied sentiment adjustment: {adjustment*100:.3f}%/day (decay={decay_rate}, total={total_adj*100:.2f}%)"
         )
@@ -701,12 +722,14 @@ class PredictionService:
             ret = self._apply_return_adjustments(returns[i], vol_multiplier, i)
             next_price = current_price * np.exp(ret)
 
-            forecasts.append({
-                "horizon": i + 1,
-                "date": current_date.strftime("%Y-%m-%d"),
-                "forecasted_price": round(next_price, 2),
-                "forecasted_return": round(float(ret), 4),
-            })
+            forecasts.append(
+                {
+                    "horizon": i + 1,
+                    "date": current_date.strftime("%Y-%m-%d"),
+                    "forecasted_price": round(next_price, 2),
+                    "forecasted_return": round(float(ret), 4),
+                }
+            )
 
             current_price = next_price
 
@@ -717,7 +740,7 @@ class PredictionService:
         BASELINE_VOL = 0.018
         if recent_volatility <= 0:
             return 1.0
-        
+
         vol_multiplier = max(1.0, recent_volatility / BASELINE_VOL)
         return min(vol_multiplier, 1.3)
 
@@ -728,7 +751,9 @@ class PredictionService:
             date += pd.Timedelta(days=1)
         return date
 
-    def _apply_return_adjustments(self, ret: float, vol_multiplier: float, day_index: int) -> float:
+    def _apply_return_adjustments(
+        self, ret: float, vol_multiplier: float, day_index: int
+    ) -> float:
         """Apply volatility scaling and caps to return."""
         ret = ret * vol_multiplier
 
@@ -743,7 +768,9 @@ class PredictionService:
         HARD_CAP = 0.03
         if abs(ret) > HARD_CAP:
             sign = 1 if ret > 0 else -1
-            logger.warning(f"Capping prediction day {day_index+1}: {ret:.2%} -> {sign*HARD_CAP:.2%}")
+            logger.warning(
+                f"Capping prediction day {day_index+1}: {ret:.2%} -> {sign*HARD_CAP:.2%}"
+            )
             ret = sign * HARD_CAP
 
         return ret

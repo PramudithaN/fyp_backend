@@ -149,16 +149,10 @@ class TestDataFlow:
         sentiment_df = pd.DataFrame(
             {
                 "date": sample_prices_df["date"],
-                "daily_sentiment": rng.uniform(
-                    -0.5, 0.5, size=len(sample_prices_df)
-                ),
+                "daily_sentiment": rng.uniform(-0.5, 0.5, size=len(sample_prices_df)),
                 "news_volume": rng.integers(5, 20, size=len(sample_prices_df)),
-                "log_news_volume": rng.uniform(
-                    1.5, 3.0, size=len(sample_prices_df)
-                ),
-                "decayed_news_volume": rng.uniform(
-                    5, 15, size=len(sample_prices_df)
-                ),
+                "log_news_volume": rng.uniform(1.5, 3.0, size=len(sample_prices_df)),
+                "decayed_news_volume": rng.uniform(5, 15, size=len(sample_prices_df)),
                 "high_news_regime": rng.integers(0, 2, size=len(sample_prices_df)),
             }
         )
@@ -242,22 +236,47 @@ class TestErrorHandling:
 class TestConcurrency:
     """Tests for concurrent requests."""
 
-    @patch("app.main.prediction_service.predict")
-    @patch("app.main.fetch_latest_prices")
+    @patch("app.main.get_market_status")
+    @patch("app.main.trigger_prediction_job_now")
+    @patch("app.main.get_locked_prediction_snapshot")
     def test_concurrent_predict_requests(
-        self, mock_fetch, mock_predict, test_client, sample_prices_df
+        self,
+        mock_get_locked_prediction_snapshot,
+        mock_trigger_prediction_job_now,
+        mock_get_market_status,
+        test_client,
     ):
         """Test handling multiple concurrent prediction requests."""
-        mock_fetch.return_value = sample_prices_df
-        mock_predict.return_value = [
-            {
-                "date": (datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d"),
-                "forecasted_price": 75.0,
-                "forecasted_return": 0.001,
-                "horizon": i,
-            }
-            for i in range(1, 15)
-        ]
+        mock_get_market_status.return_value = {
+            "is_open": True,
+            "market_state": "REGULAR",
+            "message": "Market open (REGULAR)",
+            "market_open_time": "01:00 UTC",
+            "market_close_time": "23:00 UTC",
+            "timezone_info": "Exchange timezone: Europe/London",
+        }
+
+        today = datetime.now().date()
+        based_on_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        mock_get_locked_prediction_snapshot.return_value = {
+            "source": "locked_for_date",
+            "prediction_date": today.strftime("%Y-%m-%d"),
+            "last_price_date": based_on_date,
+            "last_price": 92.0,
+            "based_on_price_date": based_on_date,
+            "based_on_price": 92.0,
+            "locked_at": "2026-03-18T18:02:00",
+            "forecasts": [
+                {
+                    "date": (today + timedelta(days=i)).strftime("%Y-%m-%d"),
+                    "forecasted_price": 75.0,
+                    "forecasted_return": 0.001,
+                    "horizon": i,
+                }
+                for i in range(1, 15)
+            ],
+        }
+        mock_trigger_prediction_job_now.return_value = {"status": "success"}
 
         # Make multiple requests
         responses = [test_client.get("/predict") for _ in range(3)]
@@ -267,3 +286,6 @@ class TestConcurrency:
             assert response.status_code == 200
             data = response.json()
             assert data["success"] is True
+            assert len(data["forecasts"]) == 14
+
+        mock_trigger_prediction_job_now.assert_not_called()

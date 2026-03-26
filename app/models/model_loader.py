@@ -147,7 +147,11 @@ class ModelArtifacts:
 
             if arima_order_path.exists() and "arima_order" not in self.config:
                 order_data = joblib.load(arima_order_path)
-                best_order = order_data.get("best_order") if isinstance(order_data, dict) else None
+                best_order = (
+                    order_data.get("best_order")
+                    if isinstance(order_data, dict)
+                    else None
+                )
                 if best_order is not None:
                     self.config["arima_order"] = list(best_order)
         else:
@@ -237,7 +241,9 @@ class ModelArtifacts:
 
     @property
     def arima_order(self) -> tuple:
-        value = self.config.get("arima_order", self.config.get("ARIMA_ORDER", (1, 0, 1)))
+        value = self.config.get(
+            "arima_order", self.config.get("ARIMA_ORDER", (1, 0, 1))
+        )
         return tuple(value)
 
     @property

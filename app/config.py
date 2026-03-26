@@ -46,7 +46,9 @@ BRENT_TICKER = "BZ=F"
 
 # API settings
 API_TITLE = "Oil Price Prediction API"
-API_DESCRIPTION = "Brent oil price forecasting using the active ensemble model artifacts"
+API_DESCRIPTION = (
+    "Brent oil price forecasting using the active ensemble model artifacts"
+)
 API_VERSION = "1.0.0"
 
 # NewsAPI configuration (loaded from environment variables)
@@ -63,7 +65,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_LLM_MODEL = os.getenv("GROQ_LLM_MODEL", "llama-3.3-70b-versatile")
 
 # XAI metadata constants
-HORIZON_ACCURACY = float(os.getenv("HORIZON_ACCURACY", "77.3"))   # H5 directional accuracy %
+HORIZON_ACCURACY = float(
+    os.getenv("HORIZON_ACCURACY", "77.3")
+)  # H5 directional accuracy %
 MODEL_VERSION = os.getenv("MODEL_VERSION", "v10")
 
 # Hugging Face API configuration (for Mistral keyword extraction)
@@ -104,9 +108,7 @@ PREDICTION_LOCK_SCHEDULE_ENABLED = (
 )
 # Defaults target a post-close lock in exchange timezone (America/New_York):
 # regular session end ~23:59, plus buffer -> run at 00:30.
-PREDICTION_LOCK_SCHEDULE_HOUR = int(
-    os.getenv("PREDICTION_LOCK_SCHEDULE_HOUR", "0")
-)
+PREDICTION_LOCK_SCHEDULE_HOUR = int(os.getenv("PREDICTION_LOCK_SCHEDULE_HOUR", "0"))
 PREDICTION_LOCK_SCHEDULE_MINUTE = int(
     os.getenv("PREDICTION_LOCK_SCHEDULE_MINUTE", "30")
 )
@@ -124,8 +126,12 @@ EXPLAINABILITY_SCHEDULE_TIMEZONE = os.getenv(
 )
 EXPLAINABILITY_SCHEDULE_HOUR = int(os.getenv("EXPLAINABILITY_SCHEDULE_HOUR", "6"))
 EXPLAINABILITY_SCHEDULE_MINUTE = int(os.getenv("EXPLAINABILITY_SCHEDULE_MINUTE", "30"))
-EXPLAINABILITY_SCHEDULE_RETRY_HOUR = int(os.getenv("EXPLAINABILITY_SCHEDULE_RETRY_HOUR", "8"))
-EXPLAINABILITY_SCHEDULE_RETRY_MINUTE = int(os.getenv("EXPLAINABILITY_SCHEDULE_RETRY_MINUTE", "0"))
+EXPLAINABILITY_SCHEDULE_RETRY_HOUR = int(
+    os.getenv("EXPLAINABILITY_SCHEDULE_RETRY_HOUR", "8")
+)
+EXPLAINABILITY_SCHEDULE_RETRY_MINUTE = int(
+    os.getenv("EXPLAINABILITY_SCHEDULE_RETRY_MINUTE", "0")
+)
 
 # News API performance controls
 NEWS_CACHE_TTL_SECONDS = float(os.getenv("NEWS_CACHE_TTL_SECONDS", "300"))

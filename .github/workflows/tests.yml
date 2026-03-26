@@ -55,6 +55,8 @@ jobs:
       timeout-minutes: 10
       env:
         SCRAPER_ENABLED: "false"
+        TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+        TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
       run: |
         pytest tests/ -v --cov=app --cov-report=xml --cov-report=term-missing
     
