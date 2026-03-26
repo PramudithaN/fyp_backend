@@ -19,7 +19,7 @@ from datetime import datetime, date, time, timedelta
 from functools import partial
 from threading import RLock
 from time import monotonic
-from typing import Annotated
+from typing import Annotated, Optional
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -119,14 +119,14 @@ _PREDICT_CACHE_MAX_STALE_SECONDS = max(
     _PREDICT_CACHE_TTL_SECONDS,
 )
 _predict_cache_lock = RLock()
-_predict_cache: tuple[float, PredictionResponse] | None = None
+_predict_cache: Optional[tuple[float, PredictionResponse]] = None
 _prediction_refresh_lock = asyncio.Lock()
-_prediction_background_refresh_task: asyncio.Task | None = None
+_prediction_background_refresh_task: Optional[asyncio.Task] = None
 
 # Market status caching (reduces Yahoo Finance API calls)
 _MARKET_STATUS_CACHE_TTL_SECONDS = 60.0  # Cache for 60 seconds
 _market_status_cache_lock = RLock()
-_market_status_cache: tuple[float, dict] | None = None
+_market_status_cache: Optional[tuple[float, dict]] = None
 
 
 def _next_business_day(date_value: pd.Timestamp) -> pd.Timestamp:
@@ -279,7 +279,7 @@ async def _refresh_prediction_cache(
         return response
 
 
-def _get_cached_prediction(*, persist_forecast: bool) -> PredictionResponse | None:
+def _get_cached_prediction(*, persist_forecast: bool) -> Optional[PredictionResponse]:
     """Return valid/stale cache entry when available and trigger background refresh if needed."""
     if not _cache_enabled():
         return None
@@ -299,7 +299,7 @@ def _get_cached_prediction(*, persist_forecast: bool) -> PredictionResponse | No
     return None
 
 
-def _get_cached_market_status() -> dict | None:
+def _get_cached_market_status() -> Optional[dict]:
     """Return cached market status if available and fresh (within TTL)."""
     if not _cache_enabled():
         return None
@@ -359,7 +359,7 @@ def _current_prediction_date_local() -> str:
     return current_prediction_date_local()
 
 
-def _next_locked_update_iso(now_local: datetime | None = None) -> str:
+def _next_locked_update_iso(now_local: Optional[datetime] = None) -> str:
     """Return next scheduled lock refresh timestamp in configured local timezone."""
     tz = ZoneInfo(PREDICTION_LOCK_SCHEDULE_TIMEZONE)
     local_now = now_local.astimezone(tz) if now_local is not None else datetime.now(tz)
@@ -777,7 +777,9 @@ async def get_prices():
     },
 )
 async def get_news(
-    article_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    article_date: Annotated[
+        Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    ] = None,
     days: Annotated[int, Query(ge=1)] = 7,
 ):
     """
@@ -830,8 +832,8 @@ async def get_news(
     },
 )
 async def get_historical_prices(
-    start_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
-    end_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    start_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    end_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
     granularity: Annotated[str, Query(pattern=r"^(daily|weekly|monthly)$")] = "daily",
     limit: Annotated[int, Query(ge=1, le=5000)] = 500,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -904,8 +906,8 @@ async def get_historical_prices(
     },
 )
 async def get_historical_features_combined(
-    start_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
-    end_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    start_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    end_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
     granularity: Annotated[str, Query(pattern=r"^(daily|weekly|monthly)$")] = "daily",
     limit: Annotated[int, Query(ge=1, le=5000)] = 500,
     offset: Annotated[int, Query(ge=0)] = 0,
@@ -1180,8 +1182,8 @@ async def predict_from_uploaded_excel(
     },
 )
 async def compare_predictions_with_actuals(
-    start_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
-    end_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    start_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    end_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
 ):
     """
     Compare actual stored prices with stored predictions up to a cutoff date.
@@ -1344,8 +1346,8 @@ async def scraper_status():
     },
 )
 async def scraper_run(
-    target_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
-    x_scraper_key: Annotated[str | None, Header()] = None,
+    target_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    x_scraper_key: Annotated[Optional[str], Header()] = None,
 ):
     """
     Manually trigger a news scraping run.
@@ -1441,11 +1443,11 @@ async def scraper_backfill(
     },
 )
 async def backfill_news_images(
-    start_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
-    end_date: Annotated[str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
-    limit: Annotated[int | None, Query(ge=1, le=5000)] = None,
+    start_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    end_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    limit: Annotated[Optional[int], Query(ge=1, le=5000)] = None,
     reset: bool = False,
-    x_scraper_key: Annotated[str | None, Header()] = None,
+    x_scraper_key: Annotated[Optional[str], Header()] = None,
 ):
     """Backfill missing image_url values for stored news articles using Pexels."""
     if SCRAPER_API_KEY and x_scraper_key != SCRAPER_API_KEY:
@@ -1486,7 +1488,7 @@ async def backfill_news_images(
 # ============================================================================
 
 
-async def _get_or_trigger_explanation(explanation_date: str) -> dict | None:
+async def _get_or_trigger_explanation(explanation_date: str) -> Optional[dict]:
     """Fetch explanation by date; for today's date, trigger one immediate job attempt if missing."""
     from app.database import get_explanation_for_date
 
@@ -1535,7 +1537,7 @@ async def _get_or_trigger_explanation(explanation_date: str) -> dict | None:
 )
 async def get_explanation(
     explanation_date: Annotated[
-        str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")
+        Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")
     ] = None,
 ):
     """
@@ -1651,7 +1653,7 @@ async def get_explanation(
 )
 async def regenerate_explanation(
     explanation_date: Annotated[
-        str | None, Query(pattern=r"^\d{4}-\d{2}-\d{2}$")
+        Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")
     ] = None,
 ):
     """

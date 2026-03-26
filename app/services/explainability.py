@@ -140,7 +140,7 @@ class ExplainabilityService:
 
             prediction_date_obj = datetime.strptime(prediction_date, "%Y-%m-%d").date()
 
-            def _days_behind_latest(prices_df: pd.DataFrame) -> int | None:
+            def _days_behind_latest(prices_df: pd.DataFrame) -> Optional[int]:
                 if prices_df is None or prices_df.empty:
                     return None
                 latest_price_date = pd.to_datetime(prices_df["date"].iloc[-1]).date()
@@ -978,7 +978,7 @@ class ExplainabilityService:
 
     def _build_sentiment_headline(
         self, article: Dict[str, Any]
-    ) -> Dict[str, Any] | None:
+    ) -> Optional[Dict[str, Any]]:
         """Create one headline explanation row from an article record."""
         try:
             title = article["title"]

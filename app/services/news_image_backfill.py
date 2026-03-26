@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from app.database import (
     clear_news_article_image_urls,
@@ -19,9 +19,9 @@ def validate_backfill_date(date_str: str) -> str:
 
 
 def backfill_news_image_urls(
-    start_date: str | None = None,
-    end_date: str | None = None,
-    limit: int | None = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: Optional[int] = None,
     reset: bool = False,
 ) -> dict:
     init_database()

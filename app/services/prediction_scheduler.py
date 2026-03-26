@@ -6,6 +6,7 @@ Runs once after market close and stores exactly one locked forecast row per day.
 
 import logging
 from datetime import datetime, timedelta
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -29,7 +30,7 @@ from app.services.price_fetcher import (
 
 logger = logging.getLogger(__name__)
 
-_scheduler: AsyncIOScheduler | None = None
+_scheduler: Optional[AsyncIOScheduler] = None
 
 
 def _trigger_explainability_after_lock(prediction_date: str) -> dict:
@@ -152,7 +153,7 @@ def _resolve_stable_close(
     return selected_date, selected_price
 
 
-def run_daily_prediction_job(now_local: datetime | None = None) -> dict:
+def run_daily_prediction_job(now_local: Optional[datetime] = None) -> dict:
     """
     Generate and upsert the single locked forecast row for the current local day.
 
@@ -234,7 +235,7 @@ def run_daily_prediction_job(now_local: datetime | None = None) -> dict:
     return result
 
 
-def init_prediction_scheduler() -> AsyncIOScheduler | None:
+def init_prediction_scheduler() -> Optional[AsyncIOScheduler]:
     """Initialize and start the daily locked prediction scheduler."""
     global _scheduler
 

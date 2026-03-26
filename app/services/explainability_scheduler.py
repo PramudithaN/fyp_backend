@@ -7,6 +7,7 @@ Integrates with FastAPI lifespan to start/stop scheduler with app.
 
 import logging
 from datetime import datetime
+from typing import Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -21,10 +22,10 @@ from app.config import (
 logger = logging.getLogger(__name__)
 
 # Global scheduler instance
-_scheduler: AsyncIOScheduler | None = None
+_scheduler: Optional[AsyncIOScheduler] = None
 
 
-def get_scheduler() -> AsyncIOScheduler | None:
+def get_scheduler() -> Optional[AsyncIOScheduler]:
     """Get the global scheduler instance."""
     return _scheduler
 

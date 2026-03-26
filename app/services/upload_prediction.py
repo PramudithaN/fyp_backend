@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
@@ -72,7 +72,7 @@ def _normalize_col_name(col: str) -> str:
     return str(col).strip().lower().replace(" ", "_")
 
 
-def _pick_column(columns: list[str], candidates: tuple[str, ...]) -> str | None:
+def _pick_column(columns: list[str], candidates: tuple[str, ...]) -> Optional[str]:
     normalized = {_normalize_col_name(col): col for col in columns}
     for cand in candidates:
         if cand in normalized:
@@ -102,7 +102,7 @@ def _summarize_row_errors(
     return summary
 
 
-def _parse_date_cell(raw_date: Any) -> tuple[pd.Timestamp | None, str | None]:
+def _parse_date_cell(raw_date: Any) -> tuple[Optional[pd.Timestamp], Optional[str]]:
     if _is_blank_cell(raw_date):
         return None, "date is required"
 
@@ -123,7 +123,7 @@ def _parse_date_cell(raw_date: Any) -> tuple[pd.Timestamp | None, str | None]:
     return None, "date must be in YYYY-MM-DD format"
 
 
-def _parse_price_cell(raw_price: Any) -> tuple[float | None, str | None]:
+def _parse_price_cell(raw_price: Any) -> tuple[Optional[float], Optional[str]]:
     if _is_blank_cell(raw_price):
         return None, None
 
@@ -178,8 +178,8 @@ def _extract_validated_rows(
 
 def parse_uploaded_price_excel(
     file_bytes: bytes,
-    filename: str | None,
-    max_days: int | None = None,
+    filename: Optional[str],
+    max_days: Optional[int] = None,
 ) -> pd.DataFrame:
     """Parse uploaded Excel and return standardized [date, price] rows."""
     safe_name = (filename or "").lower()
@@ -364,7 +364,7 @@ def _build_sentiment_window(
 
 def run_prediction_from_uploaded_excel(
     file_bytes: bytes,
-    filename: str | None,
+    filename: Optional[str],
 ) -> Dict[str, Any]:
     """Run prediction from uploaded Excel without storing uploaded rows in DB."""
     lookback = int(model_artifacts.lookback)
