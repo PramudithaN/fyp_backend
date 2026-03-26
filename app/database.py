@@ -1009,27 +1009,23 @@ def get_historical_prices_paginated(
     Returns:
         (df, total_count)
     """
-    conditions: List[str] = []
-    where_params: List[Any] = []
-
-    if start_date:
-        conditions.append("date >= ?")
-        where_params.append(start_date)
-    if end_date:
-        conditions.append("date <= ?")
-        where_params.append(end_date)
-
-    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-
-    query = f"""
+    query = """
         SELECT date, price, open, high, low, volume, change_pct, source,
                COUNT(*) OVER() AS total_count
         FROM historical_prices
-        {where_clause}
+        WHERE (? IS NULL OR date >= ?)
+          AND (? IS NULL OR date <= ?)
         ORDER BY date
         LIMIT ? OFFSET ?
     """
-    params = tuple(where_params) + (limit, offset)
+    params = (
+        start_date,
+        start_date,
+        end_date,
+        end_date,
+        limit,
+        offset,
+    )
 
     conn = get_connection()
     df = _query_to_df(conn, query, params)
@@ -1059,29 +1055,18 @@ def get_historical_prices_aggregated(
     """
     fmt = "%Y-%W" if granularity == "weekly" else "%Y-%m"
 
-    conditions: List[str] = []
-    where_params: List[Any] = []
-
-    if start_date:
-        conditions.append("date >= ?")
-        where_params.append(start_date)
-    if end_date:
-        conditions.append("date <= ?")
-        where_params.append(end_date)
-
-    where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
-
     # Use CTEs to:
     # 1. rank rows within each period so we can pick first/last for open/close
     # 2. aggregate per period
     # 3. paginate + attach total count in one shot
-    query = f"""
+    query = """
         WITH ranked AS (
             SELECT *,
-                   ROW_NUMBER() OVER (PARTITION BY strftime('{fmt}', date) ORDER BY date ASC)  AS rn_asc,
-                   ROW_NUMBER() OVER (PARTITION BY strftime('{fmt}', date) ORDER BY date DESC) AS rn_desc
+                   ROW_NUMBER() OVER (PARTITION BY strftime(?, date) ORDER BY date ASC)  AS rn_asc,
+                   ROW_NUMBER() OVER (PARTITION BY strftime(?, date) ORDER BY date DESC) AS rn_desc
             FROM historical_prices
-            {where_clause}
+            WHERE (? IS NULL OR date >= ?)
+              AND (? IS NULL OR date <= ?)
         ),
         agg AS (
             SELECT
@@ -1094,7 +1079,7 @@ def get_historical_prices_aggregated(
                 AVG(change_pct)                                         AS change_pct,
                 MIN(source)                                             AS source
             FROM ranked
-            GROUP BY strftime('{fmt}', date)
+            GROUP BY strftime(?, date)
         )
         SELECT date, price, open, high, low, volume, change_pct, source,
                COUNT(*) OVER() AS total_count
@@ -1102,8 +1087,17 @@ def get_historical_prices_aggregated(
         ORDER BY date
         LIMIT ? OFFSET ?
     """
-    # where_params go into the CTE inner query; limit/offset go to the outer query
-    params = tuple(where_params) + (limit, offset)
+    params = (
+        fmt,
+        fmt,
+        start_date,
+        start_date,
+        end_date,
+        end_date,
+        fmt,
+        limit,
+        offset,
+    )
 
     conn = get_connection()
     df = _query_to_df(conn, query, params)
