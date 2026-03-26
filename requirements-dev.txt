@@ -17,6 +17,7 @@ mypy>=1.4.0  # Type checker
 
 # Coverage
 coverage[toml]>=7.2.0
+coverage-badge>=1.1.0
 
 # Debugging
 ipython>=8.14.0
