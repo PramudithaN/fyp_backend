@@ -57,26 +57,48 @@ class TestPredictionPipeline:
 class TestAPIIntegration:
     """Integration tests for API endpoints."""
 
-    @patch("app.main.prediction_service.predict")
-    @patch("app.main.fetch_latest_prices")
+    @patch("app.main.get_market_status")
+    @patch("app.main.trigger_prediction_job_now")
+    @patch("app.main.get_locked_prediction_snapshot")
     def test_predict_endpoint_integration(
-        self, mock_fetch, mock_predict, test_client, sample_prices_df
+        self,
+        mock_get_locked_prediction_snapshot,
+        mock_trigger_prediction_job_now,
+        mock_get_market_status,
+        test_client,
     ):
         """Test /predict endpoint integration."""
-        # Mock price fetch
-        mock_fetch.return_value = sample_prices_df
+        mock_get_market_status.return_value = {
+            "is_open": True,
+            "market_state": "REGULAR",
+            "message": "Market open (REGULAR)",
+            "market_open_time": "01:00 UTC",
+            "market_close_time": "23:00 UTC",
+            "timezone_info": "Exchange timezone: Europe/London",
+        }
 
-        # Mock prediction
+        today = datetime.now().date()
+        based_on_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         mock_forecasts = [
             {
-                "date": (datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d"),
+                "date": (today + timedelta(days=i)).strftime("%Y-%m-%d"),
                 "forecasted_price": 75.0 + i * 0.5,
                 "forecasted_return": 0.001,
                 "horizon": i,
             }
             for i in range(1, 15)
         ]
-        mock_predict.return_value = mock_forecasts
+        mock_get_locked_prediction_snapshot.return_value = {
+            "source": "locked_for_date",
+            "prediction_date": today.strftime("%Y-%m-%d"),
+            "last_price_date": based_on_date,
+            "last_price": 92.0,
+            "based_on_price_date": based_on_date,
+            "based_on_price": 92.0,
+            "locked_at": "2026-03-18T18:02:00",
+            "forecasts": mock_forecasts,
+        }
+        mock_trigger_prediction_job_now.return_value = {"status": "success"}
 
         # Make request
         response = test_client.get("/predict")
@@ -85,6 +107,9 @@ class TestAPIIntegration:
         data = response.json()
         assert data["success"] is True
         assert len(data["forecasts"]) == 14
+        assert data["prediction_date"] == today.strftime("%Y-%m-%d")
+        assert data["last_price_date"] == based_on_date
+        assert data["last_price"] == pytest.approx(92.0)
 
         # Verify forecast structure
         for i, forecast in enumerate(data["forecasts"], 1):
@@ -93,15 +118,14 @@ class TestAPIIntegration:
             assert "forecasted_return" in forecast
             assert "horizon" in forecast
             assert forecast["horizon"] == i
+        mock_trigger_prediction_job_now.assert_not_called()
 
-    @patch("app.main.fetch_latest_prices")
-    @patch("app.main.get_last_n_trading_days")
+    @patch("app.main._sync_latest_prices_cached")
     def test_prices_endpoint_integration(
-        self, mock_get_days, mock_fetch, test_client, sample_prices_df
+        self, mock_sync_latest_prices_cached, test_client, sample_prices_df
     ):
         """Test /prices endpoint integration."""
-        mock_fetch.return_value = sample_prices_df
-        mock_get_days.return_value = sample_prices_df
+        mock_sync_latest_prices_cached.return_value = sample_prices_df
 
         response = test_client.get("/prices")
 
@@ -110,6 +134,7 @@ class TestAPIIntegration:
         assert data["success"] is True
         assert "prices" in data
         assert len(data["prices"]) > 0
+        mock_sync_latest_prices_cached.assert_called_once_with(lookback_days=60)
 
 
 class TestDataFlow:
@@ -186,10 +211,21 @@ class TestErrorHandling:
         response = test_client.get("/prices")
         assert response.status_code == 500
 
-    @patch("app.main.prediction_service.predict")
-    def test_prediction_error_handling(self, mock_predict, test_client):
+    @patch("app.main.get_market_status")
+    @patch("app.main.get_locked_prediction_snapshot")
+    def test_prediction_error_handling(
+        self, mock_get_locked_prediction_snapshot, mock_get_market_status, test_client
+    ):
         """Test error handling when prediction fails."""
-        mock_predict.side_effect = Exception("Model Error")
+        mock_get_market_status.return_value = {
+            "is_open": False,
+            "market_state": "CLOSED",
+            "message": "Market closed (CLOSED)",
+            "market_open_time": "01:00 UTC",
+            "market_close_time": "23:00 UTC",
+            "timezone_info": "Exchange timezone: Europe/London",
+        }
+        mock_get_locked_prediction_snapshot.side_effect = Exception("Snapshot Error")
 
         response = test_client.get("/predict")
         assert response.status_code == 500
