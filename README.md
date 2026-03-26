@@ -103,6 +103,9 @@ The FinBERT sentiment model is loaded from Hugging Face on first use. For deploy
 # Generate latest 14-day forecast
 curl http://localhost:8000/predict
 
+# Generate reasoning for forecasted prices
+curl http://localhost:8000/explain
+
 # Manually run today's locked daily forecast
 curl -X POST http://localhost:8000/predictions/lock/run
  

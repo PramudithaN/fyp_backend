@@ -122,26 +122,48 @@ class ExplainabilityService:
             True if prices are fresh enough for the prediction date, False otherwise.
         """
         try:
-            from app.database import get_prices as get_prices_db
+            from app.database import add_bulk_prices, get_prices as get_prices_db
 
-            # Fetch latest price
-            prices_df = get_prices_db(days=5)  # Get last 5 days to check freshness
-
-            if prices_df.empty:
-                logger.warning("No prices found in database at all.")
-                return False
-
-            latest_price_date_str = prices_df["date"].iloc[-1]
-            latest_price_date = pd.to_datetime(latest_price_date_str).date()
             prediction_date_obj = datetime.strptime(prediction_date, "%Y-%m-%d").date()
 
-            # Canonical prediction date may advance only after stable close cutoff.
-            # Allow data to be at most 1 day behind the prediction key.
-            days_behind = (prediction_date_obj - latest_price_date).days
+            def _days_behind_latest(prices_df: pd.DataFrame) -> int | None:
+                if prices_df is None or prices_df.empty:
+                    return None
+                latest_price_date = pd.to_datetime(prices_df["date"].iloc[-1]).date()
+                return (prediction_date_obj - latest_price_date).days
 
+            prices_df = get_prices_db(days=7)
+            days_behind = _days_behind_latest(prices_df)
+
+            # If DB is stale/missing, try live fetch + upsert before deferring.
+            if days_behind is None or days_behind > 1:
+                try:
+                    from app.services.price_fetcher import fetch_latest_prices
+
+                    live_prices = fetch_latest_prices(lookback_days=14)
+                    records = [
+                        {
+                            "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                            "price": float(row["price"]),
+                            "source": "yahoo_finance",
+                        }
+                        for row in live_prices[["date", "price"]].to_dict(orient="records")
+                    ]
+                    if records:
+                        add_bulk_prices(records)
+                        prices_df = get_prices_db(days=7)
+                        days_behind = _days_behind_latest(prices_df)
+                except Exception as live_err:
+                    logger.warning("Live price refresh failed during explainability validation: %s", live_err)
+
+            if days_behind is None:
+                logger.warning("No prices found in database after refresh attempt.")
+                return False
+
+            latest_price_date = pd.to_datetime(prices_df["date"].iloc[-1]).date()
             if days_behind == 0:
                 logger.info(
-                    "✓ Prices aligned for prediction_date=%s (latest=%s)",
+                    "Prices aligned for prediction_date=%s (latest=%s)",
                     prediction_date,
                     latest_price_date,
                 )
@@ -149,7 +171,7 @@ class ExplainabilityService:
 
             if days_behind == 1:
                 logger.info(
-                    "⚠ Prices are 1 day behind prediction_date=%s (latest=%s). "
+                    "Prices are 1 day behind prediction_date=%s (latest=%s). "
                     "Still acceptable for stable-close workflow.",
                     prediction_date,
                     latest_price_date,
@@ -157,7 +179,7 @@ class ExplainabilityService:
                 return True
 
             logger.error(
-                "✗ Prices are %s days behind prediction_date=%s (latest=%s). Data too stale.",
+                "Prices are %s days behind prediction_date=%s (latest=%s). Data too stale.",
                 days_behind,
                 prediction_date,
                 latest_price_date,

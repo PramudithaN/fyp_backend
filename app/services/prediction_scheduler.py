@@ -32,6 +32,38 @@ logger = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 
+def _trigger_explainability_after_lock(prediction_date: str) -> dict:
+    """
+    Attempt explainability generation immediately after locking today's prediction.
+
+    This keeps explanation availability aligned with the locked forecast lifecycle.
+    Failures here must not fail the prediction lock itself.
+    """
+    try:
+        from app.services.explainability import explainability_service
+
+        result = explainability_service.run_daily_job()
+        result_date = str(result.get("date") or "")
+
+        if result_date and result_date != prediction_date:
+            logger.warning(
+                "Explainability generated for date=%s but lock job date=%s",
+                result_date,
+                prediction_date,
+            )
+
+        logger.info("Post-lock explainability result: %s", result)
+        return result
+    except Exception as exc:
+        logger.error(
+            "Post-lock explainability trigger failed for prediction_date=%s: %s",
+            prediction_date,
+            exc,
+            exc_info=True,
+        )
+        return {"status": "failed", "error": str(exc), "date": prediction_date}
+
+
 def _to_yyyymmdd(ts: pd.Timestamp) -> str:
     return pd.to_datetime(ts).strftime("%Y-%m-%d")
 
@@ -179,6 +211,11 @@ def run_daily_prediction_job(now_local: datetime | None = None) -> dict:
         "row_id": row_id,
         "forecast_points": len(aligned_forecasts),
     }
+
+    # Keep explanation generation in the same daily flow so `/explain`
+    # can serve today's prediction rationale shortly after lock.
+    result["explainability"] = _trigger_explainability_after_lock(prediction_date)
+
     logger.info("Daily locked prediction job completed: %s", result)
     return result
 

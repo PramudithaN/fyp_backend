@@ -155,10 +155,12 @@ class TestPredictEndpoint:
     """Tests for prediction endpoint."""
 
     @patch("app.main.get_market_status")
-    @patch("app.main.get_prediction_for_date")
+    @patch("app.main.trigger_prediction_job_now")
+    @patch("app.main.get_locked_prediction_snapshot")
     def test_predict_success(
         self,
-        mock_get_prediction_for_date,
+        mock_get_locked_prediction_snapshot,
+        mock_trigger_prediction_job_now,
         mock_get_market_status,
         test_client,
     ):
@@ -181,13 +183,19 @@ class TestPredictEndpoint:
             }
             for i in range(1, 15)
         ]
-        mock_get_prediction_for_date.return_value = {
-            "prediction_date": datetime.now().strftime("%Y-%m-%d"),
-            "based_on_price_date": "2026-03-17",
+        today = datetime.now().date()
+        based_on_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        mock_get_locked_prediction_snapshot.return_value = {
+            "source": "locked_for_date",
+            "prediction_date": today.strftime("%Y-%m-%d"),
+            "last_price_date": based_on_date,
+            "last_price": 92.0,
+            "based_on_price_date": based_on_date,
             "based_on_price": 92.0,
             "locked_at": "2026-03-18T18:02:00",
             "forecasts": locked_forecasts,
         }
+        mock_trigger_prediction_job_now.return_value = {"status": "success"}
 
         response = test_client.get("/predict")
         assert response.status_code == 200
@@ -197,23 +205,24 @@ class TestPredictEndpoint:
         assert "forecasts" in data
         assert len(data["forecasts"]) == 14
         assert data["last_price"] == pytest.approx(92.0)
-        assert data["last_price_date"] == "2026-03-17"
+        assert data["last_price_date"] == based_on_date
         assert data["is_market_open"] is True
         assert data["market_open_time"] == "01:00 UTC"
         assert data["market_close_time"] == "23:00 UTC"
         assert data["timezone_info"] == "Exchange timezone: Europe/London"
+        mock_trigger_prediction_job_now.assert_not_called()
 
     @patch("app.main.get_market_status")
-    @patch("app.main.get_latest_locked_prediction")
-    @patch("app.main.get_prediction_for_date")
-    def test_predict_falls_back_to_latest_record(
+    @patch("app.main.trigger_prediction_job_now")
+    @patch("app.main.get_locked_prediction_snapshot")
+    def test_predict_refreshes_when_snapshot_missing(
         self,
-        mock_get_prediction_for_date,
-        mock_get_latest_locked_prediction,
+        mock_get_locked_prediction_snapshot,
+        mock_trigger_prediction_job_now,
         mock_get_market_status,
         test_client,
     ):
-        """If today's record is missing, endpoint should return the latest locked forecast."""
+        """If today's snapshot is missing, endpoint triggers refresh and retries."""
         mock_get_market_status.return_value = {
             "is_open": False,
             "market_state": "CLOSED",
@@ -222,36 +231,45 @@ class TestPredictEndpoint:
             "market_close_time": "23:00 UTC",
             "timezone_info": "Exchange timezone: Europe/London",
         }
-        mock_get_prediction_for_date.return_value = None
-        mock_get_latest_locked_prediction.return_value = {
-            "prediction_date": "2026-03-20",
-            "based_on_price_date": "2026-03-19",
+
+        today = datetime.now().date()
+        based_on_date = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        refreshed_snapshot = {
+            "source": "locked_for_date",
+            "prediction_date": today.strftime("%Y-%m-%d"),
+            "last_price_date": based_on_date,
+            "last_price": 85.5,
+            "based_on_price_date": based_on_date,
             "based_on_price": 85.5,
             "locked_at": "2026-03-20T18:00:00",
             "forecasts": [
                 {
-                    "date": "2026-03-21",
+                    "date": (today + timedelta(days=1)).strftime("%Y-%m-%d"),
                     "forecasted_price": 86.0,
                     "forecasted_return": 0.01,
                     "horizon": 1,
                 }
             ],
         }
+        mock_get_locked_prediction_snapshot.side_effect = [None, refreshed_snapshot]
+        mock_trigger_prediction_job_now.return_value = {"status": "success"}
 
         response = test_client.get("/predict")
         assert response.status_code == 200
         body = response.json()
-        assert body["prediction_date"] == "2026-03-20"
-        assert body["last_price_date"] == "2026-03-19"
+        assert body["prediction_date"] == today.strftime("%Y-%m-%d")
+        assert body["last_price_date"] == based_on_date
         assert body["last_price"] == pytest.approx(85.5)
+        assert mock_get_locked_prediction_snapshot.call_count == 2
+        mock_trigger_prediction_job_now.assert_called_once()
 
     @patch("app.main.get_market_status")
-    @patch("app.main.get_latest_locked_prediction")
-    @patch("app.main.get_prediction_for_date")
+    @patch("app.main.trigger_prediction_job_now")
+    @patch("app.main.get_locked_prediction_snapshot")
     def test_predict_returns_503_when_no_locked_forecast(
         self,
-        mock_get_prediction_for_date,
-        mock_get_latest_locked_prediction,
+        mock_get_locked_prediction_snapshot,
+        mock_trigger_prediction_job_now,
         mock_get_market_status,
         test_client,
     ):
@@ -264,8 +282,11 @@ class TestPredictEndpoint:
             "market_close_time": "23:00 UTC",
             "timezone_info": "Exchange timezone: Europe/London",
         }
-        mock_get_prediction_for_date.return_value = None
-        mock_get_latest_locked_prediction.return_value = None
+        mock_get_locked_prediction_snapshot.side_effect = [None, None]
+        mock_trigger_prediction_job_now.return_value = {
+            "status": "failed",
+            "error": "no_data",
+        }
 
         response = test_client.get("/predict")
         assert response.status_code == 503

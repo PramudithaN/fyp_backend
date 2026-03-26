@@ -1431,6 +1431,37 @@ async def backfill_news_images(
 # ============================================================================
 
 
+async def _get_or_trigger_explanation(explanation_date: str) -> dict | None:
+    """Fetch explanation by date; for today's date, trigger one immediate job attempt if missing."""
+    from app.database import get_explanation_for_date
+
+    explanation = await run_in_threadpool(get_explanation_for_date, explanation_date)
+    if explanation is not None:
+        return explanation
+
+    if explanation_date != _current_prediction_date_local():
+        return None
+
+    try:
+        from app.services.explainability_scheduler import trigger_explainability_job_now
+
+        trigger_result = await run_in_threadpool(trigger_explainability_job_now)
+        logger.info(
+            "On-demand explainability trigger for %s returned: %s",
+            explanation_date,
+            trigger_result,
+        )
+    except Exception as trigger_err:
+        logger.warning(
+            "On-demand explainability trigger failed for %s: %s",
+            explanation_date,
+            trigger_err,
+            exc_info=True,
+        )
+
+    return await run_in_threadpool(get_explanation_for_date, explanation_date)
+
+
 @app.get(
     "/explain",
     response_model=None,  # Manually serialize to avoid import ordering issues
@@ -1465,8 +1496,6 @@ async def get_explanation(
     Returns:
         Explainability result with SHAP features, sentiment analysis, and LLM narrative.
     """
-    from app.database import get_explanation_for_date
-
     if explanation_date is None:
         snapshot = await run_in_threadpool(
             get_locked_prediction_snapshot,
@@ -1487,13 +1516,9 @@ async def get_explanation(
         )
 
     try:
-        # Retrieve from database (fast, <200ms guaranteed)
-        explanation = await run_in_threadpool(
-            get_explanation_for_date, explanation_date
-        )
+        explanation = await _get_or_trigger_explanation(explanation_date)
 
         if explanation is None:
-            # Explanation hasn't been computed yet
             raise HTTPException(
                 status_code=503,
                 detail=(
