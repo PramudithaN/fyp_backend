@@ -721,47 +721,118 @@ def _stable_photo_index_for_title(title: str, n_photos: int) -> int:
     return int(digest[:8], 16) % n_photos
 
 
+def _stable_page_for_title(title: str, max_pages: int = 5) -> int:
+    """Return a stable 1-based Pexels page number derived from title hash."""
+    if max_pages <= 1:
+        return 1
+    seed = (title or "").strip().lower()
+    if not seed:
+        return 1
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+    return (int(digest[8:16], 16) % max_pages) + 1
+
+
+def _select_photo_url(
+    photo_list: List[str],
+    start_index: int,
+    used_image_urls: Optional[set[str]] = None,
+) -> str:
+    """Pick a photo with stable ordering and avoid reusing URLs when possible."""
+    if not photo_list:
+        return ""
+
+    idx = start_index % len(photo_list)
+    if not used_image_urls:
+        return photo_list[idx]
+
+    for offset in range(len(photo_list)):
+        candidate = photo_list[(idx + offset) % len(photo_list)]
+        if candidate not in used_image_urls:
+            used_image_urls.add(candidate)
+            return candidate
+
+    selected = photo_list[idx]
+    used_image_urls.add(selected)
+    return selected
+
+
+def _photo_cache_key(query: str, orientation: str, page: int) -> str:
+    return f"{query.strip().lower()}|{orientation}|p{page}"
+
+
+def _get_or_fetch_photo_list(
+    query: str,
+    orientation: str,
+    page: int,
+    cache: Optional[Dict[str, Any]],
+    max_new_lookups: Optional[int],
+    lookup_counter: Optional[Dict[str, int]],
+) -> Optional[List[str]]:
+    """Return cached/fetched photo list; None means lookup limit reached."""
+    cache_key = _photo_cache_key(query, orientation, page)
+    cached = cache.get(cache_key) if cache is not None else None
+    if cached is not None:
+        return cached if isinstance(cached, list) else []
+
+    if _lookup_limit_reached(max_new_lookups, lookup_counter):
+        return None
+
+    photo_list = _fetch_pexels_image_list(
+        query,
+        orientation=orientation,
+        page=page,
+    )
+
+    if lookup_counter is not None:
+        lookup_counter["count"] = lookup_counter.get("count", 0) + 1
+
+    if cache is not None:
+        cache[cache_key] = photo_list
+
+    return photo_list
+
+
 def _resolve_image_url_from_headline(
     title: str,
     cache: Optional[Dict[str, Any]] = None,
     max_new_lookups: Optional[int] = None,
     lookup_counter: Optional[Dict[str, int]] = None,
+    used_image_urls: Optional[set[str]] = None,
 ) -> str:
     """Resolve an image URL by trying multiple keyword queries for one headline.
 
-    A batch of up to PEXELS_PER_PAGE photos is fetched per (query, orientation)
-    pair and cached as a list.  Each article title selects a different photo from
-    the batch via a stable hash index, so articles with the same Pexels query
-    still get visually distinct images.
+    A batch of up to PEXELS_PER_PAGE photos is fetched per
+    (query, orientation, page) pair and cached as a list. Each article title
+    selects a photo via a stable hash index and page to improve visual variety.
     """
     queries = _build_fallback_image_queries(title)
     orientation = _infer_orientation((title or "").lower())
     # Stable 0-based index within the fetched photo batch — varies per title.
     photo_index = _stable_photo_index_for_title(title, max(1, PEXELS_PER_PAGE))
+    preferred_page = _stable_page_for_title(title, max_pages=5)
+    page_candidates = [preferred_page] if preferred_page == 1 else [preferred_page, 1]
 
     for query in queries:
-        cache_key = f"{query.strip().lower()}|{orientation}"
+        normalized_query = query.strip().lower()
+        for page in page_candidates:
+            photo_list = _get_or_fetch_photo_list(
+                normalized_query,
+                orientation,
+                page,
+                cache,
+                max_new_lookups,
+                lookup_counter,
+            )
+            if photo_list is None:
+                break
 
-        cached = cache.get(cache_key) if cache is not None else None
-        if cached is not None:
-            # Cache stores a list of URLs fetched for this (query, orientation).
-            if isinstance(cached, list) and cached:
-                return cached[photo_index % len(cached)]
-            continue  # empty list means query returned no results; try next
-
-        if _lookup_limit_reached(max_new_lookups, lookup_counter):
-            break
-
-        photo_list = _fetch_pexels_image_list(query, orientation=orientation)
-
-        if lookup_counter is not None:
-            lookup_counter["count"] = lookup_counter.get("count", 0) + 1
-
-        if cache is not None:
-            cache[cache_key] = photo_list
-
-        if photo_list:
-            return photo_list[photo_index % len(photo_list)]
+            selected = _select_photo_url(
+                photo_list,
+                photo_index,
+                used_image_urls=used_image_urls,
+            )
+            if selected:
+                return selected
 
     return ""
 
@@ -769,6 +840,7 @@ def _resolve_image_url_from_headline(
 def _fetch_pexels_image_list(
     query: str,
     orientation: str = "landscape",
+    page: int = 1,
 ) -> List[str]:
     """Fetch a batch of image URLs from Pexels for the given query.
 
@@ -785,7 +857,7 @@ def _fetch_pexels_image_list(
     params = {
         "query": query,
         "per_page": max(1, PEXELS_PER_PAGE),
-        "page": 1,
+        "page": max(1, int(page)),
         "orientation": orientation,
         "size": "medium",
     }
@@ -819,7 +891,7 @@ def _fetch_pexels_image_url(
     page: int = 1,
 ) -> str:
     """Fetch a single Pexels image URL (kept for backwards compatibility)."""
-    photos = _fetch_pexels_image_list(query, orientation=orientation)
+    photos = _fetch_pexels_image_list(query, orientation=orientation, page=page)
     return photos[0] if photos else ""
 
 
@@ -1183,8 +1255,9 @@ def _compute_sentiments_for_articles(
 
 
 def _resolve_image_urls_for_articles(articles: List[Dict[str, Any]]) -> List[str]:
-    image_cache: Dict[str, str] = {}
+    image_cache: Dict[str, Any] = {}
     lookup_counter: Dict[str, int] = {"count": 0}
+    used_image_urls: set[str] = set()
     urls: List[str] = []
     for article in articles:
         resolved = _resolve_image_url_from_headline(
@@ -1192,6 +1265,7 @@ def _resolve_image_urls_for_articles(articles: List[Dict[str, Any]]) -> List[str
             cache=image_cache,
             max_new_lookups=MAX_PEXELS_LOOKUPS_PER_RUN,
             lookup_counter=lookup_counter,
+            used_image_urls=used_image_urls,
         )
         # Always persist a non-empty image URL for frontend cards.
         urls.append(resolved or DEFAULT_ARTICLE_IMAGE_URL)

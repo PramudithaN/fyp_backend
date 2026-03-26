@@ -55,6 +55,7 @@ def backfill_news_image_urls(
         }
 
     pexels_cache: Dict[str, Any] = {}
+    used_image_urls: set[str] = set()
     updated = 0
     no_result = 0
     errors = 0
@@ -64,7 +65,11 @@ def backfill_news_image_urls(
         title = str(row.get("title") or "")
 
         try:
-            image_url = _resolve_image_url_from_headline(title=title, cache=pexels_cache)
+            image_url = _resolve_image_url_from_headline(
+                title=title,
+                cache=pexels_cache,
+                used_image_urls=used_image_urls,
+            )
 
             if image_url and update_news_article_image_url(article_id, image_url):
                 updated += 1

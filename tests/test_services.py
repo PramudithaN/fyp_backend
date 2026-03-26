@@ -594,6 +594,45 @@ class TestNewsFetcher:
 
         assert idx_a != idx_b, "Distinct headlines must not collide on the same photo index"
 
+    def test_resolve_image_url_uses_title_stable_page(self):
+        """Resolver should pass a deterministic page (not always page 1) to Pexels lookups."""
+        from app.services.news_fetcher import _resolve_image_url_from_headline, _stable_page_for_title
+
+        title = "Iraq cuts Basra oil output after southern exports halt"
+        expected_page = _stable_page_for_title(title, max_pages=5)
+        captured_pages = []
+
+        def _mock_fetch(query, orientation="landscape", page=1):
+            captured_pages.append(page)
+            return [f"https://images.example.com/{query.replace(' ', '_')}/{page}.jpg"]
+
+        with patch("app.services.news_fetcher._fetch_pexels_image_list", side_effect=_mock_fetch):
+            resolved = _resolve_image_url_from_headline(
+                title=title,
+                cache={},
+            )
+
+        assert resolved.startswith("https://images.example.com/")
+        assert captured_pages
+        assert captured_pages[0] == expected_page
+
+    def test_select_photo_url_avoids_duplicates_when_possible(self):
+        """Photo selection should prefer an unused URL before reusing an already selected one."""
+        from app.services.news_fetcher import _select_photo_url
+
+        used = {"https://images.example.com/1.jpg"}
+        selected = _select_photo_url(
+            [
+                "https://images.example.com/1.jpg",
+                "https://images.example.com/2.jpg",
+            ],
+            start_index=0,
+            used_image_urls=used,
+        )
+
+        assert selected == "https://images.example.com/2.jpg"
+        assert "https://images.example.com/2.jpg" in used
+
 
 class TestFinBERTAnalyzer:
     """Tests for FinBERT sentiment analyzer."""
