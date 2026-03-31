@@ -12,7 +12,7 @@ import os
 import math
 import re
 from collections import defaultdict
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Dict, Optional, Any
 import pandas as pd
 import logging
@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 DATE_BETWEEN_CLAUSE = " WHERE date >= ? AND date <= ?"
 DATE_FROM_CLAUSE = " WHERE date >= ?"
 DATE_TO_CLAUSE = " WHERE date <= ?"
+PREDICTION_COMPARE_LOOKBACK_BUFFER_DAYS = 45
 
 
 class _LibsqlClientCursor:
@@ -331,6 +332,18 @@ def init_database() -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_predictions_prediction_date
         ON predictions(prediction_date)
         """)
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_predictions_last_price_date
+        ON predictions(last_price_date)
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_predictions_generated_at
+        ON predictions(generated_at)
+        """
+    )
 
     # Create explanations table (stores daily explainability results)
     cursor.execute("""
@@ -2011,6 +2024,11 @@ def get_actual_vs_predicted_until(
         if start_date is not None
         else None
     )
+    prediction_window_start = (
+        (start_bound - timedelta(days=PREDICTION_COMPARE_LOOKBACK_BUFFER_DAYS))
+        if start_bound is not None
+        else None
+    )
 
     conn = get_connection()
     try:
@@ -2044,14 +2062,32 @@ def get_actual_vs_predicted_until(
         if actual_df.empty:
             return _empty_comparison_payload(cutoff_date)
 
-        prediction_runs = _query_to_df(
-            conn,
-            """
-            SELECT generated_at, last_price_date, forecasts
-            FROM predictions
-            ORDER BY generated_at ASC
-            """,
-        )
+        if prediction_window_start is None:
+            prediction_runs = _query_to_df(
+                conn,
+                """
+                SELECT generated_at, last_price_date, forecasts
+                FROM predictions
+                WHERE COALESCE(last_price_date, substr(generated_at, 1, 10)) <= ?
+                ORDER BY generated_at ASC
+                """,
+                params=(cutoff_date.strftime("%Y-%m-%d"),),
+            )
+        else:
+            prediction_runs = _query_to_df(
+                conn,
+                """
+                SELECT generated_at, last_price_date, forecasts
+                FROM predictions
+                WHERE COALESCE(last_price_date, substr(generated_at, 1, 10)) >= ?
+                  AND COALESCE(last_price_date, substr(generated_at, 1, 10)) <= ?
+                ORDER BY generated_at ASC
+                """,
+                params=(
+                    prediction_window_start.strftime("%Y-%m-%d"),
+                    cutoff_date.strftime("%Y-%m-%d"),
+                ),
+            )
     finally:
         conn.close()
 
