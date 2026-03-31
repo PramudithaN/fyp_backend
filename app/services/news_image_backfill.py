@@ -24,6 +24,7 @@ def backfill_news_image_urls(
     limit: Optional[int] = None,
     reset: bool = False,
 ) -> dict:
+    """Backfill image URLs for news articles, avoiding duplicates from database."""
     init_database()
 
     if reset:
@@ -57,7 +58,23 @@ def backfill_news_image_urls(
         }
 
     pexels_cache: Dict[str, Any] = {}
-    used_image_urls: set[str] = set()
+    
+    # Pre-populate used_image_urls with existing images from database
+    # This prevents fetching the same images during backfill
+    from app.database import get_existing_image_urls
+    try:
+        used_image_urls: set[str] = get_existing_image_urls(
+            start_date=start_date,
+            end_date=end_date
+        )
+        logger.info(
+            "Loaded %d existing image URLs from database to avoid duplicates",
+            len(used_image_urls)
+        )
+    except Exception as exc:
+        logger.warning(f"Could not load existing image URLs: {exc}")
+        used_image_urls: set[str] = set()
+    
     updated = 0
     no_result = 0
     errors = 0

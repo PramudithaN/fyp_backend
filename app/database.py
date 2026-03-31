@@ -1259,6 +1259,49 @@ def update_news_article_image_url(article_id: int, image_url: str) -> bool:
         conn.close()
 
 
+def get_existing_image_urls(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> set[str]:
+    """Return a set of all image URLs currently stored in the database.
+    
+    Args:
+        start_date: Optional start date to filter (YYYY-MM-DD)
+        end_date: Optional end date to filter (YYYY-MM-DD)
+    
+    Returns:
+        Set of image URL strings (excludes NULL and empty strings)
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        query = """
+            SELECT DISTINCT image_url
+            FROM news_articles
+            WHERE image_url IS NOT NULL AND TRIM(image_url) != ''
+        """
+        params: List[Any] = []
+        
+        if start_date and end_date:
+            query += " AND article_date >= ? AND article_date <= ?"
+            params = [start_date, end_date]
+        elif start_date:
+            query += " AND article_date >= ?"
+            params = [start_date]
+        elif end_date:
+            query += " AND article_date <= ?"
+            params = [end_date]
+        
+        cursor.execute(query, tuple(params))
+        rows = cursor.fetchall()
+        return {row[0] for row in rows if row and row[0]}
+    except Exception as e:
+        logger.error(f"Error fetching existing image URLs: {e}")
+        return set()
+    finally:
+        conn.close()
+
+
 def clear_news_article_image_urls(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,

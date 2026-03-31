@@ -1375,9 +1375,34 @@ def _compute_sentiments_for_articles(
 
 
 def _resolve_image_urls_for_articles(articles: List[Dict[str, Any]]) -> List[str]:
+    """Resolve image URLs for a batch of articles, avoiding duplicates from database.
+    
+    This function pre-populates the used_image_urls set with images already in the
+    database (from the past 30 days) to ensure we don't fetch duplicate images
+    across scheduled runs.
+    """
+    from datetime import timedelta
+    from app.database import get_existing_image_urls
+    
     image_cache: Dict[str, Any] = {}
     lookup_counter: Dict[str, int] = {"count": 0}
-    used_image_urls: set[str] = set()
+    
+    # Pre-populate used_image_urls with existing images from database (past 30 days)
+    # This prevents fetching the same images across multiple scheduled runs
+    try:
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        used_image_urls: set[str] = get_existing_image_urls(
+            start_date=start_date,
+            end_date=end_date
+        )
+        logger.info(
+            f"Loaded {len(used_image_urls)} existing image URLs from database to avoid duplicates"
+        )
+    except Exception as e:
+        logger.warning(f"Could not load existing image URLs from database: {e}")
+        used_image_urls: set[str] = set()
+    
     urls: List[str] = []
     for article in articles:
         resolved = _resolve_image_url_from_headline(
