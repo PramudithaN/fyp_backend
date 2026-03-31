@@ -422,3 +422,83 @@ class ExplanationResponse(BaseModel):
     computation_time_seconds: float = Field(
         ..., description="How long computation took"
     )
+
+
+class SentimentHeadlineLite(BaseModel):
+    """Compact sentiment headline item for sentiment overview responses."""
+
+    title: str = Field(..., description="News headline title")
+    source: Optional[str] = Field(None, description="News source name")
+    sentiment_score: Optional[float] = Field(
+        None, description="Per-article sentiment score"
+    )
+    published_at: Optional[str] = Field(None, description="Original publish timestamp")
+    url: Optional[str] = Field(None, description="Article URL")
+
+
+class SentimentDayPoint(BaseModel):
+    """Daily sentiment point with raw and decayed sentiment details."""
+
+    date: str = Field(..., description=DATE_FMT_DESC)
+    raw_daily_sentiment: float = Field(
+        ..., description="Raw daily sentiment mean stored for the date"
+    )
+    cross_day_decayed_sentiment: float = Field(
+        ..., description="Cross-day decayed sentiment using lambda-based recurrence"
+    )
+    sentiment_change_vs_prev_day: float = Field(
+        ..., description="Delta of raw daily sentiment versus previous day"
+    )
+    decayed_sentiment_change_vs_prev_day: float = Field(
+        ..., description="Delta of decayed sentiment versus previous day"
+    )
+    news_volume: int = Field(..., ge=0, description="Number of news articles")
+    log_news_volume: float = Field(..., description="Log-transformed news volume")
+    decayed_news_volume: float = Field(..., ge=0)
+    high_news_regime: bool = Field(
+        ..., description="Whether the day is classified as high news regime"
+    )
+    ema: dict = Field(..., description="EMA values for sentiment and volume features")
+    headlines: List[SentimentHeadlineLite] = Field(
+        default_factory=list,
+        description="Top daily headlines sorted by absolute sentiment score",
+    )
+
+
+class SentimentOverviewMeta(BaseModel):
+    """Metadata and model assumptions used for sentiment calculations."""
+
+    requested_days: int = Field(..., ge=1)
+    actual_records: int = Field(..., ge=0)
+    start_date: Optional[str] = Field(None, description="First date in returned data")
+    end_date: Optional[str] = Field(None, description="Last date in returned data")
+    decay_lambda: float = Field(..., description="Lambda used in decay recurrence")
+    decay_factor: float = Field(..., description="exp(-lambda)")
+    decay_formula: str = Field(..., description="Formula used for cross-day decay")
+    ema_windows: List[int] = Field(..., description="EMA windows included in payload")
+
+
+class SentimentOverviewSummary(BaseModel):
+    """High-level sentiment summary stats for dashboard cards."""
+
+    latest_raw_sentiment: Optional[float] = None
+    latest_decayed_sentiment: Optional[float] = None
+    average_raw_sentiment: Optional[float] = None
+    average_decayed_sentiment: Optional[float] = None
+    average_news_volume: Optional[float] = None
+    high_news_regime_days: int = Field(..., ge=0)
+    positive_days: int = Field(..., ge=0)
+    negative_days: int = Field(..., ge=0)
+    neutral_days: int = Field(..., ge=0)
+    latest_trend: str = Field(
+        ..., description="bullish|bearish|neutral trend based on recent decayed slope"
+    )
+
+
+class SentimentOverviewResponse(BaseModel):
+    """Response for frontend sentiment overview endpoint."""
+
+    success: bool
+    meta: SentimentOverviewMeta
+    summary: SentimentOverviewSummary
+    timeline: List[SentimentDayPoint]

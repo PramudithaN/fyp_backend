@@ -20,6 +20,7 @@ from app.database import (
     get_latest_sentiment,
     get_sentiment_count,
     get_sentiment_for_dates,
+    get_news_articles,
 )
 from app.config import EMA_WINDOWS
 from app.services.news_fetcher import fetch_and_compute_sentiment
@@ -345,6 +346,224 @@ class SentimentService:
             "total_records": count,
             "latest_date": latest["date"] if latest else None,
             "latest_sentiment": latest,
+        }
+
+    def _sentiment_meta(
+        self,
+        days: int,
+        records: int,
+        start: Optional[str],
+        end: Optional[str],
+    ) -> Dict[str, Any]:
+        decay_factor = float(np.exp(-self.decay_lambda))
+        return {
+            "requested_days": days,
+            "actual_records": records,
+            "start_date": start,
+            "end_date": end,
+            "decay_lambda": self.decay_lambda,
+            "decay_factor": decay_factor,
+            "decay_formula": (
+                "decayed[t] = raw_sentiment[t] + exp(-lambda) * decayed[t-1]"
+            ),
+            "ema_windows": EMA_WINDOWS,
+        }
+
+    def _empty_overview_payload(self, days: int) -> Dict[str, Any]:
+        return {
+            "success": True,
+            "meta": self._sentiment_meta(days, 0, None, None),
+            "summary": {
+                "latest_raw_sentiment": None,
+                "latest_decayed_sentiment": None,
+                "average_raw_sentiment": None,
+                "average_decayed_sentiment": None,
+                "average_news_volume": None,
+                "high_news_regime_days": 0,
+                "positive_days": 0,
+                "negative_days": 0,
+                "neutral_days": 0,
+                "latest_trend": "neutral",
+            },
+            "timeline": [],
+        }
+
+    def _load_sentiment_df(self, days: int, end_date: Optional[str]) -> pd.DataFrame:
+        if end_date:
+            parsed_end = pd.to_datetime(end_date)
+            start_date = (parsed_end - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+            end_date_str = parsed_end.strftime("%Y-%m-%d")
+            return get_sentiment_for_dates(start_date, end_date_str)
+        return get_sentiment_history(days=days)
+
+    def _build_ema_map(self, df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+        ema_df = df[
+            [
+                "date",
+                "cross_day_decayed_sentiment",
+                "news_volume",
+                "log_news_volume",
+                "decayed_news_volume",
+            ]
+        ].copy()
+        ema_df = ema_df.rename(
+            columns={"cross_day_decayed_sentiment": "daily_sentiment_decay"}
+        )
+        ema_df = self.compute_sentiment_features(ema_df)
+
+        ema_map: Dict[str, Dict[str, float]] = {}
+        for _, row in ema_df.iterrows():
+            date_key = pd.to_datetime(row["date"]).strftime("%Y-%m-%d")
+            payload: Dict[str, float] = {}
+            for window in EMA_WINDOWS:
+                payload[f"daily_sentiment_decay_ema_{window}"] = float(
+                    row.get(f"daily_sentiment_decay_ema_{window}", 0.0)
+                )
+                payload[f"news_volume_ema_{window}"] = float(
+                    row.get(f"news_volume_ema_{window}", 0.0)
+                )
+                payload[f"log_news_volume_ema_{window}"] = float(
+                    row.get(f"log_news_volume_ema_{window}", 0.0)
+                )
+                payload[f"decayed_news_volume_ema_{window}"] = float(
+                    row.get(f"decayed_news_volume_ema_{window}", 0.0)
+                )
+            ema_map[date_key] = payload
+
+        return ema_map
+
+    @staticmethod
+    def _ranked_headlines(date_key: str, headlines_per_day: int) -> List[Dict[str, Any]]:
+        articles = get_news_articles(date_key)
+        ranked = sorted(
+            articles,
+            key=lambda art: abs(float(art.get("sentiment_score") or 0.0)),
+            reverse=True,
+        )
+        return [
+            {
+                "title": article.get("title") or "",
+                "source": article.get("source"),
+                "sentiment_score": article.get("sentiment_score"),
+                "published_at": article.get("published_at"),
+                "url": article.get("url"),
+            }
+            for article in ranked[:headlines_per_day]
+        ]
+
+    @staticmethod
+    def _trend_label(decayed_series: pd.Series) -> str:
+        slope_window = min(5, len(decayed_series))
+        recent = decayed_series.tail(slope_window)
+        signal = float(recent.iloc[-1] - recent.iloc[0]) if len(recent) > 1 else 0.0
+        if signal > 0.05:
+            return "bullish"
+        if signal < -0.05:
+            return "bearish"
+        return "neutral"
+
+    def get_frontend_sentiment_overview(
+        self,
+        days: int = 60,
+        end_date: Optional[str] = None,
+        include_headlines: bool = True,
+        headlines_per_day: int = 3,
+    ) -> Dict[str, Any]:
+        """Build a frontend-oriented sentiment payload with decay analytics."""
+        if days < 1:
+            raise ValueError("days must be >= 1")
+        if headlines_per_day < 1:
+            raise ValueError("headlines_per_day must be >= 1")
+
+        raw_df = self._load_sentiment_df(days, end_date)
+        if raw_df.empty:
+            return self._empty_overview_payload(days)
+
+        df = raw_df.copy().sort_values("date").reset_index(drop=True)
+        if "daily_sentiment" not in df.columns:
+            raise ValueError("Sentiment data does not contain daily_sentiment column")
+
+        df["raw_daily_sentiment"] = df["daily_sentiment"].astype(float)
+        decay_factor = float(np.exp(-self.decay_lambda))
+        decayed_values: List[float] = []
+        for idx, raw_value in enumerate(df["raw_daily_sentiment"].tolist()):
+            if idx == 0:
+                decayed_values.append(float(raw_value))
+            else:
+                decayed_values.append(float(raw_value) + decay_factor * decayed_values[-1])
+        df["cross_day_decayed_sentiment"] = decayed_values
+        df["sentiment_change_vs_prev_day"] = (
+            df["raw_daily_sentiment"].diff().fillna(0.0)
+        )
+        df["decayed_sentiment_change_vs_prev_day"] = (
+            df["cross_day_decayed_sentiment"].diff().fillna(0.0)
+        )
+
+        ema_map = self._build_ema_map(df)
+
+        timeline: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            date_key = pd.to_datetime(row["date"]).strftime("%Y-%m-%d")
+            ema_payload = ema_map.get(date_key, {})
+            headlines = (
+                self._ranked_headlines(date_key, headlines_per_day)
+                if include_headlines
+                else []
+            )
+
+            timeline.append(
+                {
+                    "date": date_key,
+                    "raw_daily_sentiment": float(row["raw_daily_sentiment"]),
+                    "cross_day_decayed_sentiment": float(
+                        row["cross_day_decayed_sentiment"]
+                    ),
+                    "sentiment_change_vs_prev_day": float(
+                        row["sentiment_change_vs_prev_day"]
+                    ),
+                    "decayed_sentiment_change_vs_prev_day": float(
+                        row["decayed_sentiment_change_vs_prev_day"]
+                    ),
+                    "news_volume": int(row["news_volume"]),
+                    "log_news_volume": float(row["log_news_volume"]),
+                    "decayed_news_volume": float(row["decayed_news_volume"]),
+                    "high_news_regime": bool(int(row["high_news_regime"])),
+                    "ema": ema_payload,
+                    "headlines": headlines,
+                }
+            )
+
+        latest_trend = self._trend_label(df["cross_day_decayed_sentiment"])
+
+        positive_days = int((df["raw_daily_sentiment"] > 0.05).sum())
+        negative_days = int((df["raw_daily_sentiment"] < -0.05).sum())
+        neutral_days = int(len(df) - positive_days - negative_days)
+
+        return {
+            "success": True,
+            "meta": self._sentiment_meta(
+                days,
+                int(len(df)),
+                pd.to_datetime(df["date"].iloc[0]).strftime("%Y-%m-%d"),
+                pd.to_datetime(df["date"].iloc[-1]).strftime("%Y-%m-%d"),
+            ),
+            "summary": {
+                "latest_raw_sentiment": float(df["raw_daily_sentiment"].iloc[-1]),
+                "latest_decayed_sentiment": float(
+                    df["cross_day_decayed_sentiment"].iloc[-1]
+                ),
+                "average_raw_sentiment": float(df["raw_daily_sentiment"].mean()),
+                "average_decayed_sentiment": float(
+                    df["cross_day_decayed_sentiment"].mean()
+                ),
+                "average_news_volume": float(df["news_volume"].mean()),
+                "high_news_regime_days": int(df["high_news_regime"].sum()),
+                "positive_days": positive_days,
+                "negative_days": negative_days,
+                "neutral_days": neutral_days,
+                "latest_trend": latest_trend,
+            },
+            "timeline": timeline,
         }
 
     def apply_no_news_decay(self, date_str: str) -> Dict[str, Any]:

@@ -155,6 +155,88 @@ class TestNewsEndpoint:
         assert response.status_code == 500
 
 
+class TestSentimentOverviewEndpoint:
+    """Tests for sentiment overview endpoint."""
+
+    @patch("app.main.sentiment_service.get_frontend_sentiment_overview")
+    def test_sentiment_overview_success(self, mock_overview, test_client):
+        """Endpoint should return frontend-ready sentiment payload."""
+        mock_overview.return_value = {
+            "success": True,
+            "meta": {
+                "requested_days": 30,
+                "actual_records": 2,
+                "start_date": "2026-03-15",
+                "end_date": "2026-03-16",
+                "decay_lambda": 0.3,
+                "decay_factor": 0.7408,
+                "decay_formula": "decayed[t] = raw_sentiment[t] + exp(-lambda) * decayed[t-1]",
+                "ema_windows": [3, 7, 14],
+            },
+            "summary": {
+                "latest_raw_sentiment": 0.22,
+                "latest_decayed_sentiment": 0.36,
+                "average_raw_sentiment": 0.18,
+                "average_decayed_sentiment": 0.29,
+                "average_news_volume": 24.5,
+                "high_news_regime_days": 1,
+                "positive_days": 2,
+                "negative_days": 0,
+                "neutral_days": 0,
+                "latest_trend": "bullish",
+            },
+            "timeline": [
+                {
+                    "date": "2026-03-15",
+                    "raw_daily_sentiment": 0.14,
+                    "cross_day_decayed_sentiment": 0.14,
+                    "sentiment_change_vs_prev_day": 0.0,
+                    "decayed_sentiment_change_vs_prev_day": 0.0,
+                    "news_volume": 19,
+                    "log_news_volume": 2.94,
+                    "decayed_news_volume": 16.2,
+                    "high_news_regime": False,
+                    "ema": {
+                        "daily_sentiment_decay_ema_3": 0.14,
+                        "news_volume_ema_3": 19.0,
+                        "log_news_volume_ema_3": 2.94,
+                        "decayed_news_volume_ema_3": 16.2,
+                    },
+                    "headlines": [
+                        {
+                            "title": "Oil steady on demand outlook",
+                            "source": "Reuters",
+                            "sentiment_score": 0.22,
+                            "published_at": "2026-03-15T09:00:00",
+                            "url": "https://example.com/news-1",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        response = test_client.get(
+            "/sentiment/overview?days=30&include_headlines=true&headlines_per_day=2"
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["meta"]["decay_lambda"] == pytest.approx(0.3)
+        assert data["summary"]["latest_trend"] == "bullish"
+        assert len(data["timeline"]) == 1
+        mock_overview.assert_called_once_with(
+            days=30,
+            end_date=None,
+            include_headlines=True,
+            headlines_per_day=2,
+        )
+
+    def test_sentiment_overview_invalid_end_date(self, test_client):
+        """Invalid end_date should return 400."""
+        response = test_client.get("/sentiment/overview?end_date=2026-02-30")
+        assert response.status_code == 400
+
+
 class TestPredictEndpoint:
     """Tests for prediction endpoint."""
 

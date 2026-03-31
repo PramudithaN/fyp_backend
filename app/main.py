@@ -100,6 +100,7 @@ from app.schemas.prediction import (
     HistoricalCombinedFeaturesResponse,
     PredictionFanResponse,
     NewsArticlesResponse,
+    SentimentOverviewResponse,
 )
 
 # Configure logging
@@ -831,6 +832,56 @@ async def get_news(
         raise
     except Exception as e:
         logger.error(f"Error fetching news articles: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/sentiment/overview",
+    response_model=SentimentOverviewResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid input parameters"},
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error retrieving sentiment overview",
+        },
+    },
+)
+async def get_sentiment_overview(
+    days: Annotated[int, Query(ge=1, le=365)] = 60,
+    end_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    include_headlines: bool = True,
+    headlines_per_day: Annotated[int, Query(ge=1, le=10)] = 3,
+):
+    """
+    Return frontend-ready sentiment analytics with decay and volume details.
+
+    Includes:
+    - Raw daily sentiment from storage
+    - Cross-day decayed sentiment (lambda recurrence)
+    - Sentiment momentum and EMA signals
+    - News volume regime metrics
+    - Optional top sentiment headlines per day
+    """
+    if end_date is not None:
+        try:
+            datetime.strptime(end_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
+
+    try:
+        return await run_in_threadpool(
+            partial(
+                sentiment_service.get_frontend_sentiment_overview,
+                days=days,
+                end_date=end_date,
+                include_headlines=include_headlines,
+                headlines_per_day=headlines_per_day,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error fetching sentiment overview: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
