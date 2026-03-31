@@ -21,6 +21,7 @@ from app.database import (
     get_sentiment_count,
     get_sentiment_for_dates,
     get_all_sentiment_history,
+    get_historical_features_combined,
 )
 from app.config import EMA_WINDOWS
 from app.services.news_fetcher import fetch_and_compute_sentiment
@@ -350,7 +351,7 @@ class SentimentService:
 
     def _sentiment_meta(
         self,
-        days: int,
+        days: Optional[int],
         records: int,
         start: Optional[str],
         end: Optional[str],
@@ -388,16 +389,63 @@ class SentimentService:
             "timeline": [],
         }
 
-    def _load_sentiment_df(self, days: int, end_date: Optional[str], start_date: Optional[str] = None, include_all_history: bool = False) -> pd.DataFrame:
-        if include_all_history:
-            return get_all_sentiment_history()
+    def _combined_sentiment_df(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+    ) -> pd.DataFrame:
+        df = get_historical_features_combined(start_date, end_date)
+        if df.empty:
+            return df
+
+        sentiment_df = df[
+            [
+                "date",
+                "daily_sentiment_decay",
+                "news_volume",
+                "log_news_volume",
+                "decayed_news_volume",
+                "high_news_regime",
+            ]
+        ].copy()
+        sentiment_df = sentiment_df.rename(
+            columns={"daily_sentiment_decay": "daily_sentiment"}
+        )
+        sentiment_df = sentiment_df.dropna(subset=["daily_sentiment"]).reset_index(
+            drop=True
+        )
+
+        if sentiment_df.empty:
+            return sentiment_df
+
+        for col in ["news_volume", "log_news_volume", "decayed_news_volume"]:
+            sentiment_df[col] = sentiment_df[col].fillna(0.0)
+        sentiment_df["high_news_regime"] = sentiment_df["high_news_regime"].fillna(0)
+
+        return sentiment_df
+
+    def _load_sentiment_df(self, days: Optional[int], end_date: Optional[str], start_date: Optional[str] = None, include_all_history: bool = False) -> pd.DataFrame:
+        if include_all_history or days is None:
+            combined_df = self._combined_sentiment_df()
+            return combined_df if not combined_df.empty else get_all_sentiment_history()
+
         if start_date and end_date:
-            return get_sentiment_for_dates(start_date, end_date)
+            combined_df = self._combined_sentiment_df(start_date, end_date)
+            return combined_df if not combined_df.empty else get_sentiment_for_dates(start_date, end_date)
+
         if end_date:
             parsed_end = pd.to_datetime(end_date)
             start_date_computed = (parsed_end - timedelta(days=days - 1)).strftime("%Y-%m-%d")
             end_date_str = parsed_end.strftime("%Y-%m-%d")
+            combined_df = self._combined_sentiment_df(start_date_computed, end_date_str)
+            if not combined_df.empty:
+                return combined_df
             return get_sentiment_for_dates(start_date_computed, end_date_str)
+
+        combined_df = self._combined_sentiment_df()
+        if not combined_df.empty:
+            return combined_df.tail(days).reset_index(drop=True)
+
         return get_sentiment_history(days=days)
 
     def _build_ema_map(self, df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
@@ -449,13 +497,13 @@ class SentimentService:
 
     def get_frontend_sentiment_overview(
         self,
-        days: int = 60,
+        days: Optional[int] = None,
         end_date: Optional[str] = None,
         include_all_history: bool = False,
         start_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build a frontend-oriented sentiment payload with decay analytics."""
-        if days < 1:
+        if days is not None and days < 1:
             raise ValueError("days must be >= 1")
 
         raw_df = self._load_sentiment_df(days, end_date, start_date, include_all_history)

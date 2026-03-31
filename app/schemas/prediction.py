@@ -452,7 +452,7 @@ class SentimentDayPoint(BaseModel):
 class SentimentOverviewMeta(BaseModel):
     """Metadata and model assumptions used for sentiment calculations."""
 
-    requested_days: int = Field(..., ge=1)
+    requested_days: Optional[int] = Field(None, ge=1)
     actual_records: int = Field(..., ge=0)
     start_date: Optional[str] = Field(None, description="First date in returned data")
     end_date: Optional[str] = Field(None, description="Last date in returned data")

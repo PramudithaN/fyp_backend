@@ -896,23 +896,17 @@ async def get_sentiment_overview(
     if start_date and not end_date:
         end_date = date.today().strftime("%Y-%m-%d")
 
-    # Default behavior: return all history when caller does not send any range selector.
-    has_days_param = "days" in request.query_params
-    has_history_flag_param = "include_all_history" in request.query_params
+    # When no range selectors are given, load all history.
     has_date_range = bool(start_date or end_date)
-    effective_days = days if days is not None else 60
-    has_any_selector = has_days_param or has_history_flag_param or has_date_range
-    effective_include_all_history = include_all_history if has_any_selector else True
-
-    # Explicit days/date ranges should take precedence over include_all_history defaults.
-    if has_days_param or has_date_range:
-        effective_include_all_history = False
+    effective_include_all_history = (
+        include_all_history if (days is not None or has_date_range) else True
+    )
 
     try:
         return await run_in_threadpool(
             partial(
                 sentiment_service.get_frontend_sentiment_overview,
-                days=effective_days,
+                days=days,
                 end_date=end_date,
                 include_all_history=effective_include_all_history,
                 start_date=start_date,
