@@ -20,7 +20,6 @@ from app.database import (
     get_latest_sentiment,
     get_sentiment_count,
     get_sentiment_for_dates,
-    get_news_articles,
 )
 from app.config import EMA_WINDOWS
 from app.services.news_fetcher import fetch_and_compute_sentiment
@@ -433,25 +432,6 @@ class SentimentService:
         return ema_map
 
     @staticmethod
-    def _ranked_headlines(date_key: str, headlines_per_day: int) -> List[Dict[str, Any]]:
-        articles = get_news_articles(date_key)
-        ranked = sorted(
-            articles,
-            key=lambda art: abs(float(art.get("sentiment_score") or 0.0)),
-            reverse=True,
-        )
-        return [
-            {
-                "title": article.get("title") or "",
-                "source": article.get("source"),
-                "sentiment_score": article.get("sentiment_score"),
-                "published_at": article.get("published_at"),
-                "url": article.get("url"),
-            }
-            for article in ranked[:headlines_per_day]
-        ]
-
-    @staticmethod
     def _trend_label(decayed_series: pd.Series) -> str:
         slope_window = min(5, len(decayed_series))
         recent = decayed_series.tail(slope_window)
@@ -466,14 +446,10 @@ class SentimentService:
         self,
         days: int = 60,
         end_date: Optional[str] = None,
-        include_headlines: bool = True,
-        headlines_per_day: int = 3,
     ) -> Dict[str, Any]:
         """Build a frontend-oriented sentiment payload with decay analytics."""
         if days < 1:
             raise ValueError("days must be >= 1")
-        if headlines_per_day < 1:
-            raise ValueError("headlines_per_day must be >= 1")
 
         raw_df = self._load_sentiment_df(days, end_date)
         if raw_df.empty:
@@ -505,11 +481,6 @@ class SentimentService:
         for _, row in df.iterrows():
             date_key = pd.to_datetime(row["date"]).strftime("%Y-%m-%d")
             ema_payload = ema_map.get(date_key, {})
-            headlines = (
-                self._ranked_headlines(date_key, headlines_per_day)
-                if include_headlines
-                else []
-            )
 
             timeline.append(
                 {
@@ -529,7 +500,6 @@ class SentimentService:
                     "decayed_news_volume": float(row["decayed_news_volume"]),
                     "high_news_regime": bool(int(row["high_news_regime"])),
                     "ema": ema_payload,
-                    "headlines": headlines,
                 }
             )
 

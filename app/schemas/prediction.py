@@ -424,18 +424,6 @@ class ExplanationResponse(BaseModel):
     )
 
 
-class SentimentHeadlineLite(BaseModel):
-    """Compact sentiment headline item for sentiment overview responses."""
-
-    title: str = Field(..., description="News headline title")
-    source: Optional[str] = Field(None, description="News source name")
-    sentiment_score: Optional[float] = Field(
-        None, description="Per-article sentiment score"
-    )
-    published_at: Optional[str] = Field(None, description="Original publish timestamp")
-    url: Optional[str] = Field(None, description="Article URL")
-
-
 class SentimentDayPoint(BaseModel):
     """Daily sentiment point with raw and decayed sentiment details."""
 
@@ -459,10 +447,6 @@ class SentimentDayPoint(BaseModel):
         ..., description="Whether the day is classified as high news regime"
     )
     ema: dict = Field(..., description="EMA values for sentiment and volume features")
-    headlines: List[SentimentHeadlineLite] = Field(
-        default_factory=list,
-        description="Top daily headlines sorted by absolute sentiment score",
-    )
 
 
 class SentimentOverviewMeta(BaseModel):
