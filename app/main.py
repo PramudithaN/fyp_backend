@@ -23,7 +23,16 @@ from typing import Annotated, Optional
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query, Header, UploadFile, File, Response
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Query,
+    Header,
+    UploadFile,
+    File,
+    Response,
+    Request,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -110,6 +119,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 INVALID_DATE_DETAIL = "Invalid date format. Expected YYYY-MM-DD"
+
+
+def _validate_iso_date_or_400(value: Optional[str]) -> None:
+    """Validate YYYY-MM-DD query dates and raise HTTP 400 on invalid input."""
+    if value is None:
+        return
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
 
 _PRICE_SYNC_CACHE_TTL_SECONDS = 300.0
 _price_sync_cache_lock = RLock()
@@ -847,7 +866,8 @@ async def get_news(
     },
 )
 async def get_sentiment_overview(
-    days: Annotated[int, Query(ge=1)] = 60,
+    request: Request,
+    days: Annotated[Optional[int], Query(ge=1)] = None,
     end_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
     start_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
     include_all_history: Annotated[bool, Query()] = False,
@@ -863,36 +883,38 @@ async def get_sentiment_overview(
     - News volume regime metrics
     
     Query Parameters:
-    - days: Number of days to retrieve (default: 60, ignored if start_date/end_date or include_all_history provided)
+    - days: Number of days to retrieve (optional; if omitted, full history is returned)
     - end_date: Optional end date (YYYY-MM-DD format)
     - start_date: Optional start date (YYYY-MM-DD format, overrides days parameter)
     - include_all_history: If True, returns all historical data from 2014-2025
     - include_headlines: Reserved for future use (currently ignored)
     """
-    # Validate date parameters
-    if end_date is not None:
-        try:
-            datetime.strptime(end_date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
-    
-    if start_date is not None:
-        try:
-            datetime.strptime(start_date, "%Y-%m-%d")
-        except ValueError:
-            raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
+    _validate_iso_date_or_400(end_date)
+    _validate_iso_date_or_400(start_date)
     
     # If start_date is provided but not end_date, use today as end_date
     if start_date and not end_date:
         end_date = date.today().strftime("%Y-%m-%d")
 
+    # Default behavior: return all history when caller does not send any range selector.
+    has_days_param = "days" in request.query_params
+    has_history_flag_param = "include_all_history" in request.query_params
+    has_date_range = bool(start_date or end_date)
+    effective_days = days if days is not None else 60
+    has_any_selector = has_days_param or has_history_flag_param or has_date_range
+    effective_include_all_history = include_all_history if has_any_selector else True
+
+    # Explicit days/date ranges should take precedence over include_all_history defaults.
+    if has_days_param or has_date_range:
+        effective_include_all_history = False
+
     try:
         return await run_in_threadpool(
             partial(
                 sentiment_service.get_frontend_sentiment_overview,
-                days=days,
+                days=effective_days,
                 end_date=end_date,
-                include_all_history=include_all_history,
+                include_all_history=effective_include_all_history,
                 start_date=start_date,
             )
         )
