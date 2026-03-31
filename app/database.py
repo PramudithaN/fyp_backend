@@ -547,6 +547,31 @@ def get_sentiment_for_dates(start_date: str, end_date: str) -> pd.DataFrame:
     return df
 
 
+def get_all_sentiment_history() -> pd.DataFrame:
+    """
+    Get all historical sentiment data from 2014 onwards.
+
+    Returns:
+        DataFrame with all sentiment data ordered by date
+    """
+    conn = get_connection()
+
+    query = """
+        SELECT date, daily_sentiment_decay as daily_sentiment, news_volume, log_news_volume,
+               decayed_news_volume, high_news_regime
+        FROM sentiment_history
+        ORDER BY date
+    """
+
+    df = _query_to_df(conn, query, params=())
+    conn.close()
+
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+
+    return df
+
+
 def get_latest_sentiment() -> Optional[Dict[str, Any]]:
     """Get the most recent sentiment record."""
     conn = get_connection()

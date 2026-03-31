@@ -20,6 +20,7 @@ from app.database import (
     get_latest_sentiment,
     get_sentiment_count,
     get_sentiment_for_dates,
+    get_all_sentiment_history,
 )
 from app.config import EMA_WINDOWS
 from app.services.news_fetcher import fetch_and_compute_sentiment
@@ -387,7 +388,9 @@ class SentimentService:
             "timeline": [],
         }
 
-    def _load_sentiment_df(self, days: int, end_date: Optional[str]) -> pd.DataFrame:
+    def _load_sentiment_df(self, days: int, end_date: Optional[str], include_all_history: bool = False) -> pd.DataFrame:
+        if include_all_history:
+            return get_all_sentiment_history()
         if end_date:
             parsed_end = pd.to_datetime(end_date)
             start_date = (parsed_end - timedelta(days=days - 1)).strftime("%Y-%m-%d")
@@ -446,12 +449,13 @@ class SentimentService:
         self,
         days: int = 60,
         end_date: Optional[str] = None,
+        include_all_history: bool = False,
     ) -> Dict[str, Any]:
         """Build a frontend-oriented sentiment payload with decay analytics."""
         if days < 1:
             raise ValueError("days must be >= 1")
 
-        raw_df = self._load_sentiment_df(days, end_date)
+        raw_df = self._load_sentiment_df(days, end_date, include_all_history)
         if raw_df.empty:
             return self._empty_overview_payload(days)
 
