@@ -478,6 +478,7 @@ def _regenerate_explanation_payload_for_date(explanation_date: str) -> dict:
         update_explanation_xai_payload,
     )
     from app.services.explainability import ExplainabilityService
+    from app.services.prediction_snapshot import LockedPredictionUnavailableError
     import warnings
     import time as _time
 
@@ -491,7 +492,19 @@ def _regenerate_explanation_payload_for_date(explanation_date: str) -> dict:
     if prices_df.empty:
         raise HTTPException(status_code=503, detail="No price data available")
 
-    snapshot = get_required_locked_prediction_snapshot(prediction_date=explanation_date)
+    try:
+        snapshot = get_required_locked_prediction_snapshot(
+            prediction_date=explanation_date
+        )
+    except LockedPredictionUnavailableError:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"No locked prediction available for {explanation_date}. "
+                "Run POST /predictions/lock/run first."
+            ),
+        )
+
     last_date = str(snapshot.get("last_price_date") or "")
     if not last_date:
         raise HTTPException(
@@ -1489,12 +1502,23 @@ async def backfill_news_images(
 
 
 async def _get_or_trigger_explanation(explanation_date: str) -> Optional[dict]:
-    """Fetch explanation by date; for today's date, trigger one immediate job attempt if missing."""
+    """Fetch explanation by date; for today's date, trigger one immediate job attempt if missing.
+
+    Returns the explanation dict if found, or None if unavailable.
+    Never raises — all trigger errors are logged and swallowed so the caller
+    can return a clean 503 instead of an unhandled 500.
+    """
     from app.database import get_explanation_for_date
 
-    explanation = await run_in_threadpool(get_explanation_for_date, explanation_date)
-    if explanation is not None:
-        return explanation
+    try:
+        explanation = await run_in_threadpool(get_explanation_for_date, explanation_date)
+        if explanation is not None:
+            return explanation
+    except Exception as db_err:
+        logger.warning(
+            "Failed reading explanation for %s: %s", explanation_date, db_err
+        )
+        # Fall through — try the trigger path below for today's date
 
     if explanation_date != _current_prediction_date_local():
         return None
@@ -1515,8 +1539,17 @@ async def _get_or_trigger_explanation(explanation_date: str) -> Optional[dict]:
             trigger_err,
             exc_info=True,
         )
+        return None
 
-    return await run_in_threadpool(get_explanation_for_date, explanation_date)
+    try:
+        return await run_in_threadpool(get_explanation_for_date, explanation_date)
+    except Exception as db_err:
+        logger.warning(
+            "Failed reading explanation after trigger for %s: %s",
+            explanation_date,
+            db_err,
+        )
+        return None
 
 
 @app.get(
@@ -1555,23 +1588,36 @@ async def get_explanation(
     Returns:
         Explainability result with SHAP features, sentiment analysis, and LLM narrative.
     """
-    if explanation_date is None:
+    if explanation_date is None or not str(explanation_date).strip():
         snapshot = await run_in_threadpool(
             get_locked_prediction_snapshot,
             _current_prediction_date_local(),
         )
-        if snapshot and snapshot.get("prediction_date"):
-            explanation_date = str(snapshot["prediction_date"])
-        else:
-            explanation_date = _current_prediction_date_local()
+        derived_date = (
+            str(snapshot["prediction_date"]).strip()
+            if snapshot and snapshot.get("prediction_date")
+            else ""
+        )
+        explanation_date = derived_date or _current_prediction_date_local()
 
     # Validate date format
     try:
-        datetime.strptime(explanation_date, "%Y-%m-%d")
+        parsed_date = datetime.strptime(explanation_date, "%Y-%m-%d").date()
     except ValueError:
         raise HTTPException(
             status_code=400,
             detail=INVALID_DATE_DETAIL,
+        )
+
+    # Guard against far-future dates that can never have an explanation
+    max_allowed = date.today() + timedelta(days=1)
+    if parsed_date > max_allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Date {explanation_date} is in the future. "
+                "Explanations can only be retrieved for today or past dates."
+            ),
         )
 
     try:
@@ -1590,45 +1636,64 @@ async def get_explanation(
 
         # Format response — prefer full xai_payload (dashboard-ready) if stored
         xai_payload = explanation.get("xai_payload")
-        if xai_payload:
+        if xai_payload and isinstance(xai_payload, dict):
             # New format: full dashboard payload — return directly
             return xai_payload
 
         # Legacy format: build from individual DB columns (explanations without xai_payload)
+        # Use .get() with defaults to prevent KeyError on partial/corrupt rows.
+        top_features = []
+        for f in explanation.get("top_shap_features") or []:
+            try:
+                top_features.append(
+                    {
+                        "feature_name": f.get("feature_name", "unknown"),
+                        "shap_value": f.get("shap_value", 0.0),
+                        "feature_value": f.get("feature_value", 0.0),
+                    }
+                )
+            except (AttributeError, TypeError):
+                continue
+
+        sentiment_headlines = []
+        for h in explanation.get("sentiment_headlines") or []:
+            try:
+                sentiment_headlines.append(
+                    {
+                        "headline": h.get("headline", ""),
+                        "sentiment_score": h.get("sentiment_score", 0.0),
+                        "sentiment_label": h.get("sentiment_label", "neutral"),
+                        "top_keywords": h.get("top_keywords", []),
+                    }
+                )
+            except (AttributeError, TypeError):
+                continue
+
         return {
             "success": True,
             "explanation_date": explanation_date,
-            "prediction": explanation["prediction"],
-            "confidence_interval_lower": explanation["confidence_interval_lower"],
-            "confidence_interval_upper": explanation["confidence_interval_upper"],
-            "confidence_level": explanation["confidence_level"],
-            "agreement_score": explanation["agreement_score"],
+            "prediction": explanation.get("prediction", 0.0),
+            "confidence_interval_lower": explanation.get(
+                "confidence_interval_lower", 0.0
+            ),
+            "confidence_interval_upper": explanation.get(
+                "confidence_interval_upper", 0.0
+            ),
+            "confidence_level": explanation.get("confidence_level", "unknown"),
+            "agreement_score": explanation.get("agreement_score", 0.0),
             "model_contributions": {
-                "arima": explanation["arima_contribution"],
-                "gru_mid": explanation["gru_mid_contribution"],
-                "gru_sent": explanation["gru_sent_contribution"],
-                "xgb_hf": explanation["xgb_hf_contribution"],
+                "arima": explanation.get("arima_contribution", 0.0),
+                "gru_mid": explanation.get("gru_mid_contribution", 0.0),
+                "gru_sent": explanation.get("gru_sent_contribution", 0.0),
+                "xgb_hf": explanation.get("xgb_hf_contribution", 0.0),
             },
-            "top_features": [
-                {
-                    "feature_name": f["feature_name"],
-                    "shap_value": f["shap_value"],
-                    "feature_value": f.get("feature_value", 0.0),
-                }
-                for f in explanation["top_shap_features"]
-            ],
-            "sentiment_headlines": [
-                {
-                    "headline": h["headline"],
-                    "sentiment_score": h["sentiment_score"],
-                    "sentiment_label": h["sentiment_label"],
-                    "top_keywords": h.get("top_keywords", []),
-                }
-                for h in explanation["sentiment_headlines"]
-            ],
-            "explanation_text": explanation["explanation_text"],
-            "generated_at": explanation["generated_at"],
-            "computation_time_seconds": explanation["computation_time_seconds"],
+            "top_features": top_features,
+            "sentiment_headlines": sentiment_headlines,
+            "explanation_text": explanation.get("explanation_text", ""),
+            "generated_at": explanation.get("generated_at", ""),
+            "computation_time_seconds": explanation.get(
+                "computation_time_seconds", 0.0
+            ),
         }
 
     except HTTPException:
@@ -1679,6 +1744,18 @@ async def regenerate_explanation(
     except HTTPException:
         raise
     except Exception as e:
+        # Check for LockedPredictionUnavailableError that may propagate
+        # from nested calls not wrapped by _regenerate_explanation_payload_for_date
+        from app.services.prediction_snapshot import LockedPredictionUnavailableError
+
+        if isinstance(e, LockedPredictionUnavailableError):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"No locked prediction available for {explanation_date}. "
+                    "Run POST /predictions/lock/run first."
+                ),
+            )
         logger.error(f"Explanation regeneration failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 

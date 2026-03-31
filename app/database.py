@@ -2084,16 +2084,36 @@ def get_explanation_for_date(explanation_date: str) -> Optional[Dict[str, Any]]:
         )
         result = _fetchone_dict(cursor)
         if result:
-            # Parse JSON fields
-            result["top_shap_features"] = json.loads(
-                result.get("top_shap_features", "[]")
-            )
-            result["sentiment_headlines"] = json.loads(
-                result.get("sentiment_headlines", "[]")
-            )
-            result["model_weights"] = json.loads(result.get("model_weights", "{}"))
+            # Parse JSON fields — defensively handle malformed/empty values
+            for key, default in (
+                ("top_shap_features", []),
+                ("sentiment_headlines", []),
+                ("model_weights", {}),
+            ):
+                raw = result.get(key)
+                try:
+                    result[key] = json.loads(raw) if raw else default
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Malformed JSON in explanations.%s for date=%s, using default",
+                        key,
+                        explanation_date,
+                    )
+                    result[key] = default
+
             raw_payload = result.get("xai_payload")
-            result["xai_payload"] = json.loads(raw_payload) if raw_payload else None
+            try:
+                result["xai_payload"] = (
+                    json.loads(raw_payload)
+                    if raw_payload and str(raw_payload).strip()
+                    else None
+                )
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "Malformed xai_payload JSON for date=%s, treating as None",
+                    explanation_date,
+                )
+                result["xai_payload"] = None
         return result
     finally:
         conn.close()

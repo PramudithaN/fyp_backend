@@ -701,3 +701,36 @@ class TestFinBERTAnalyzer:
         except Exception:
             # Expected to fail without model files, but test the call
             pass
+
+
+class TestExplainabilityService:
+    """Tests for explainability service behavior."""
+
+    def test_explain_sentiment_returns_headlines_without_lime(self):
+        """Headline extraction should not require the optional LIME dependency."""
+        from app.services.explainability import ExplainabilityService
+
+        articles = [
+            {
+                "title": "OPEC signals deeper crude output cuts",
+                "description": "Supply tightening may support prices.",
+                "sentiment_score": 0.42,
+            },
+            {
+                "title": "Refinery outages slow regional fuel demand",
+                "description": "Demand softness weighs on sentiment.",
+                "sentiment_score": -0.31,
+            },
+        ]
+
+        service = ExplainabilityService()
+
+        with patch("app.services.explainability.lime", None), patch(
+            "app.services.explainability.get_news_articles", return_value=articles
+        ):
+            result = service._explain_sentiment(article_date="2026-03-30")
+
+        assert result["method"] == "heuristic_keywords"
+        assert len(result["top_headlines"]) == 2
+        assert result["top_headlines"][0]["headline"] == articles[0]["title"]
+        assert result["top_headlines"][0]["sentiment_label"] == "bullish"

@@ -1002,18 +1002,12 @@ class ExplainabilityService:
 
     def _explain_sentiment(self, article_date: Optional[str] = None) -> Dict[str, Any]:
         """
-        Analyze top 3 sentiment headlines using LIME.
+        Analyze top 3 sentiment headlines.
 
         Returns:
-            Dict with headline sentiment and LIME explanations.
+            Dict with headline sentiment metadata and keyword hints.
         """
-        if lime is None:
-            logger.warning("LIME library not available")
-            return {"top_headlines": [], "method": "unavailable"}
-
         try:
-            from app.services.finbert_analyzer import analyze_sentiment
-
             # Use the same market reference date as locked prediction.
             target_article_date = article_date or current_prediction_date_local()
             articles = get_news_articles(target_article_date)
@@ -1037,9 +1031,15 @@ class ExplainabilityService:
                 if headline is not None:
                     top_headlines.append(headline)
 
+            method = "lime_keywords" if lime is not None else "heuristic_keywords"
+            if lime is None:
+                logger.info(
+                    "LIME library not available; using heuristic keyword extraction for sentiment headlines"
+                )
+
             return {
                 "top_headlines": top_headlines,
-                "method": "lime_keywords" if top_headlines else "unavailable",
+                "method": method if top_headlines else "unavailable",
             }
 
         except Exception as e:
