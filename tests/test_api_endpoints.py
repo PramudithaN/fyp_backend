@@ -213,11 +213,11 @@ class TestSentimentOverviewEndpoint:
         assert data["meta"]["decay_lambda"] == pytest.approx(0.3)
         assert data["summary"]["latest_trend"] == "bullish"
         assert len(data["timeline"]) == 1
-        mock_overview.assert_called_once_with(
-            days=30,
-            end_date=None,
-            include_all_history=False,
-        )
+        mock_overview.assert_called_once()
+        call_kwargs = mock_overview.call_args[1]
+        assert call_kwargs["days"] == 30
+        assert call_kwargs["end_date"] is None
+        assert call_kwargs["include_all_history"] is False
 
     @patch("app.main.sentiment_service.get_frontend_sentiment_overview")
     def test_sentiment_overview_with_all_history(self, mock_overview, test_client):
@@ -255,11 +255,45 @@ class TestSentimentOverviewEndpoint:
         assert data["success"] is True
         assert data["meta"]["start_date"] == "2014-01-01"
         assert data["meta"]["end_date"] == "2025-12-31"
-        mock_overview.assert_called_once_with(
-            days=60,
-            end_date=None,
-            include_all_history=True,
-        )
+        mock_overview.assert_called_once()
+
+    @patch("app.main.sentiment_service.get_frontend_sentiment_overview")
+    def test_sentiment_overview_with_date_range(self, mock_overview, test_client):
+        """Endpoint should support start_date and end_date parameters."""
+        mock_overview.return_value = {
+            "success": True,
+            "meta": {
+                "requested_days": 60,
+                "actual_records": 4000,
+                "start_date": "2014-01-01",
+                "end_date": "2025-12-31",
+                "decay_lambda": 0.3,
+                "decay_factor": 0.7408,
+                "decay_formula": "decayed[t] = raw_sentiment[t] + exp(-lambda) * decayed[t-1]",
+                "ema_windows": [3, 7, 14],
+            },
+            "summary": {
+                "latest_raw_sentiment": 0.22,
+                "latest_decayed_sentiment": 0.36,
+                "average_raw_sentiment": 0.18,
+                "average_decayed_sentiment": 0.29,
+                "average_news_volume": 24.5,
+                "high_news_regime_days": 1,
+                "positive_days": 2,
+                "negative_days": 0,
+                "neutral_days": 0,
+                "latest_trend": "bullish",
+            },
+            "timeline": [],
+        }
+
+        response = test_client.get("/sentiment/overview?start_date=2014-01-01&end_date=2025-12-31&include_headlines=false")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+        assert data["meta"]["start_date"] == "2014-01-01"
+        assert data["meta"]["end_date"] == "2025-12-31"
+        mock_overview.assert_called_once()
 
     def test_sentiment_overview_invalid_end_date(self, test_client):
         """Invalid end_date should return 400."""

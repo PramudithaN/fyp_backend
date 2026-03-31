@@ -388,14 +388,16 @@ class SentimentService:
             "timeline": [],
         }
 
-    def _load_sentiment_df(self, days: int, end_date: Optional[str], include_all_history: bool = False) -> pd.DataFrame:
+    def _load_sentiment_df(self, days: int, end_date: Optional[str], start_date: Optional[str] = None, include_all_history: bool = False) -> pd.DataFrame:
         if include_all_history:
             return get_all_sentiment_history()
+        if start_date and end_date:
+            return get_sentiment_for_dates(start_date, end_date)
         if end_date:
             parsed_end = pd.to_datetime(end_date)
-            start_date = (parsed_end - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+            start_date_computed = (parsed_end - timedelta(days=days - 1)).strftime("%Y-%m-%d")
             end_date_str = parsed_end.strftime("%Y-%m-%d")
-            return get_sentiment_for_dates(start_date, end_date_str)
+            return get_sentiment_for_dates(start_date_computed, end_date_str)
         return get_sentiment_history(days=days)
 
     def _build_ema_map(self, df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
@@ -450,12 +452,13 @@ class SentimentService:
         days: int = 60,
         end_date: Optional[str] = None,
         include_all_history: bool = False,
+        start_date: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build a frontend-oriented sentiment payload with decay analytics."""
         if days < 1:
             raise ValueError("days must be >= 1")
 
-        raw_df = self._load_sentiment_df(days, end_date, include_all_history)
+        raw_df = self._load_sentiment_df(days, end_date, start_date, include_all_history)
         if raw_df.empty:
             return self._empty_overview_payload(days)
 

@@ -849,7 +849,9 @@ async def get_news(
 async def get_sentiment_overview(
     days: Annotated[int, Query(ge=1)] = 60,
     end_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
+    start_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
     include_all_history: Annotated[bool, Query()] = False,
+    include_headlines: Annotated[bool, Query()] = False,
 ):
     """
     Return frontend-ready sentiment analytics with decay and volume details.
@@ -861,15 +863,28 @@ async def get_sentiment_overview(
     - News volume regime metrics
     
     Query Parameters:
-    - days: Number of days to retrieve (default: 60, ignored if include_all_history=True)
+    - days: Number of days to retrieve (default: 60, ignored if start_date/end_date or include_all_history provided)
     - end_date: Optional end date (YYYY-MM-DD format)
-    - include_all_history: If True, returns all historical data from 2014-2025, ignoring days parameter
+    - start_date: Optional start date (YYYY-MM-DD format, overrides days parameter)
+    - include_all_history: If True, returns all historical data from 2014-2025
+    - include_headlines: Reserved for future use (currently ignored)
     """
+    # Validate date parameters
     if end_date is not None:
         try:
             datetime.strptime(end_date, "%Y-%m-%d")
         except ValueError:
             raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
+    
+    if start_date is not None:
+        try:
+            datetime.strptime(start_date, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail=INVALID_DATE_DETAIL)
+    
+    # If start_date is provided but not end_date, use today as end_date
+    if start_date and not end_date:
+        end_date = date.today().strftime("%Y-%m-%d")
 
     try:
         return await run_in_threadpool(
@@ -877,7 +892,8 @@ async def get_sentiment_overview(
                 sentiment_service.get_frontend_sentiment_overview,
                 days=days,
                 end_date=end_date,
-                include_all_history=include_all_history,
+                include_all_history=include_all_history or bool(start_date),
+                start_date=start_date,
             )
         )
     except ValueError as e:
