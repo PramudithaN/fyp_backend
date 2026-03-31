@@ -892,7 +892,7 @@ async def get_sentiment_overview(
                 sentiment_service.get_frontend_sentiment_overview,
                 days=days,
                 end_date=end_date,
-                include_all_history=include_all_history or bool(start_date),
+                include_all_history=include_all_history,
                 start_date=start_date,
             )
         )
