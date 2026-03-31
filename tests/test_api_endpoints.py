@@ -202,22 +202,11 @@ class TestSentimentOverviewEndpoint:
                         "log_news_volume_ema_3": 2.94,
                         "decayed_news_volume_ema_3": 16.2,
                     },
-                    "headlines": [
-                        {
-                            "title": "Oil steady on demand outlook",
-                            "source": "Reuters",
-                            "sentiment_score": 0.22,
-                            "published_at": "2026-03-15T09:00:00",
-                            "url": "https://example.com/news-1",
-                        }
-                    ],
                 }
             ],
         }
 
-        response = test_client.get(
-            "/sentiment/overview?days=30&include_headlines=true&headlines_per_day=2"
-        )
+        response = test_client.get("/sentiment/overview?days=30")
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
@@ -227,8 +216,6 @@ class TestSentimentOverviewEndpoint:
         mock_overview.assert_called_once_with(
             days=30,
             end_date=None,
-            include_headlines=True,
-            headlines_per_day=2,
         )
 
     def test_sentiment_overview_invalid_end_date(self, test_client):

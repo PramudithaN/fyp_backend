@@ -1924,6 +1924,11 @@ def _build_comparison_rows(
                 "error": round(error, 2),
                 "abs_error": round(abs_error, 2),
                 "abs_pct_error": round(pct_error, 2) if pct_error is not None else None,
+                # Preserve full-precision values so summary metrics match
+                # training-time calculation style (compute first, round last).
+                "_error_raw": error,
+                "_abs_error_raw": abs_error,
+                "_abs_pct_error_raw": pct_error,
             }
         )
 
@@ -1931,12 +1936,19 @@ def _build_comparison_rows(
 
 
 def _compute_comparison_metrics(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Compute MAE, RMSE, and MAPE from comparison rows."""
+    """Compute MAE, RMSE, and MAPE from full-precision comparison values."""
     compared_days = len(rows)
-    mae = sum(r["abs_error"] for r in rows) / compared_days
-    rmse = math.sqrt(sum((r["error"] ** 2) for r in rows) / compared_days)
+    mae = sum(float(r.get("_abs_error_raw", r["abs_error"])) for r in rows) / compared_days
+    rmse = math.sqrt(
+        sum((float(r.get("_error_raw", r["error"])) ** 2) for r in rows)
+        / compared_days
+    )
 
-    mape_values = [r["abs_pct_error"] for r in rows if r["abs_pct_error"] is not None]
+    mape_values = [
+        float(r.get("_abs_pct_error_raw", r["abs_pct_error"]))
+        for r in rows
+        if r.get("_abs_pct_error_raw", r["abs_pct_error"]) is not None
+    ]
     mape = sum(mape_values) / len(mape_values) if mape_values else None
 
     return {
@@ -2028,10 +2040,15 @@ def get_actual_vs_predicted_until(
     if not rows:
         return _empty_comparison_payload(cutoff_date)
 
+    metrics = _compute_comparison_metrics(rows)
+    public_rows = [
+        {k: v for k, v in row.items() if not k.startswith("_")} for row in rows
+    ]
+
     return {
         "end_date": cutoff_date.strftime("%Y-%m-%d"),
-        "rows": rows,
-        "metrics": _compute_comparison_metrics(rows),
+        "rows": public_rows,
+        "metrics": metrics,
     }
 
 

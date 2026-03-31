@@ -847,10 +847,8 @@ async def get_news(
     },
 )
 async def get_sentiment_overview(
-    days: Annotated[int, Query(ge=1, le=365)] = 60,
+    days: Annotated[int, Query(ge=1)] = 60,
     end_date: Annotated[Optional[str], Query(pattern=r"^\d{4}-\d{2}-\d{2}$")] = None,
-    include_headlines: bool = True,
-    headlines_per_day: Annotated[int, Query(ge=1, le=10)] = 3,
 ):
     """
     Return frontend-ready sentiment analytics with decay and volume details.
@@ -860,7 +858,6 @@ async def get_sentiment_overview(
     - Cross-day decayed sentiment (lambda recurrence)
     - Sentiment momentum and EMA signals
     - News volume regime metrics
-    - Optional top sentiment headlines per day
     """
     if end_date is not None:
         try:
@@ -874,8 +871,6 @@ async def get_sentiment_overview(
                 sentiment_service.get_frontend_sentiment_overview,
                 days=days,
                 end_date=end_date,
-                include_headlines=include_headlines,
-                headlines_per_day=headlines_per_day,
             )
         )
     except ValueError as e:
@@ -1603,6 +1598,95 @@ async def _get_or_trigger_explanation(explanation_date: str) -> Optional[dict]:
         return None
 
 
+async def _resolve_explanation_date(explanation_date: Optional[str]) -> str:
+    """Resolve explanation date, defaulting to today's locked prediction date when available."""
+    if explanation_date is not None and str(explanation_date).strip():
+        return explanation_date
+
+    snapshot = await run_in_threadpool(
+        get_locked_prediction_snapshot,
+        _current_prediction_date_local(),
+    )
+    derived_date = (
+        str(snapshot["prediction_date"]).strip()
+        if snapshot and snapshot.get("prediction_date")
+        else ""
+    )
+    return derived_date or _current_prediction_date_local()
+
+
+def _validate_explanation_date(explanation_date: str) -> None:
+    """Validate explanation date format and ensure it is not too far in the future."""
+    try:
+        parsed_date = datetime.strptime(explanation_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=INVALID_DATE_DETAIL,
+        )
+
+    max_allowed = date.today() + timedelta(days=1)
+    if parsed_date > max_allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Date {explanation_date} is in the future. "
+                "Explanations can only be retrieved for today or past dates."
+            ),
+        )
+
+
+def _build_legacy_explanation_response(explanation: dict, explanation_date: str) -> dict:
+    """Build legacy explanation response from individual DB columns."""
+    top_features = []
+    for feature in explanation.get("top_shap_features") or []:
+        try:
+            top_features.append(
+                {
+                    "feature_name": feature.get("feature_name", "unknown"),
+                    "shap_value": feature.get("shap_value", 0.0),
+                    "feature_value": feature.get("feature_value", 0.0),
+                }
+            )
+        except (AttributeError, TypeError):
+            continue
+
+    sentiment_headlines = []
+    for headline in explanation.get("sentiment_headlines") or []:
+        try:
+            sentiment_headlines.append(
+                {
+                    "headline": headline.get("headline", ""),
+                    "sentiment_score": headline.get("sentiment_score", 0.0),
+                    "sentiment_label": headline.get("sentiment_label", "neutral"),
+                    "top_keywords": headline.get("top_keywords", []),
+                }
+            )
+        except (AttributeError, TypeError):
+            continue
+
+    return {
+        "success": True,
+        "explanation_date": explanation_date,
+        "prediction": explanation.get("prediction", 0.0),
+        "confidence_interval_lower": explanation.get("confidence_interval_lower", 0.0),
+        "confidence_interval_upper": explanation.get("confidence_interval_upper", 0.0),
+        "confidence_level": explanation.get("confidence_level", "unknown"),
+        "agreement_score": explanation.get("agreement_score", 0.0),
+        "model_contributions": {
+            "arima": explanation.get("arima_contribution", 0.0),
+            "gru_mid": explanation.get("gru_mid_contribution", 0.0),
+            "gru_sent": explanation.get("gru_sent_contribution", 0.0),
+            "xgb_hf": explanation.get("xgb_hf_contribution", 0.0),
+        },
+        "top_features": top_features,
+        "sentiment_headlines": sentiment_headlines,
+        "explanation_text": explanation.get("explanation_text", ""),
+        "generated_at": explanation.get("generated_at", ""),
+        "computation_time_seconds": explanation.get("computation_time_seconds", 0.0),
+    }
+
+
 @app.get(
     "/explain",
     response_model=None,  # Manually serialize to avoid import ordering issues
@@ -1639,37 +1723,8 @@ async def get_explanation(
     Returns:
         Explainability result with SHAP features, sentiment analysis, and LLM narrative.
     """
-    if explanation_date is None or not str(explanation_date).strip():
-        snapshot = await run_in_threadpool(
-            get_locked_prediction_snapshot,
-            _current_prediction_date_local(),
-        )
-        derived_date = (
-            str(snapshot["prediction_date"]).strip()
-            if snapshot and snapshot.get("prediction_date")
-            else ""
-        )
-        explanation_date = derived_date or _current_prediction_date_local()
-
-    # Validate date format
-    try:
-        parsed_date = datetime.strptime(explanation_date, "%Y-%m-%d").date()
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=INVALID_DATE_DETAIL,
-        )
-
-    # Guard against far-future dates that can never have an explanation
-    max_allowed = date.today() + timedelta(days=1)
-    if parsed_date > max_allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Date {explanation_date} is in the future. "
-                "Explanations can only be retrieved for today or past dates."
-            ),
-        )
+    explanation_date = await _resolve_explanation_date(explanation_date)
+    _validate_explanation_date(explanation_date)
 
     try:
         explanation = await _get_or_trigger_explanation(explanation_date)
@@ -1691,61 +1746,7 @@ async def get_explanation(
             # New format: full dashboard payload — return directly
             return xai_payload
 
-        # Legacy format: build from individual DB columns (explanations without xai_payload)
-        # Use .get() with defaults to prevent KeyError on partial/corrupt rows.
-        top_features = []
-        for f in explanation.get("top_shap_features") or []:
-            try:
-                top_features.append(
-                    {
-                        "feature_name": f.get("feature_name", "unknown"),
-                        "shap_value": f.get("shap_value", 0.0),
-                        "feature_value": f.get("feature_value", 0.0),
-                    }
-                )
-            except (AttributeError, TypeError):
-                continue
-
-        sentiment_headlines = []
-        for h in explanation.get("sentiment_headlines") or []:
-            try:
-                sentiment_headlines.append(
-                    {
-                        "headline": h.get("headline", ""),
-                        "sentiment_score": h.get("sentiment_score", 0.0),
-                        "sentiment_label": h.get("sentiment_label", "neutral"),
-                        "top_keywords": h.get("top_keywords", []),
-                    }
-                )
-            except (AttributeError, TypeError):
-                continue
-
-        return {
-            "success": True,
-            "explanation_date": explanation_date,
-            "prediction": explanation.get("prediction", 0.0),
-            "confidence_interval_lower": explanation.get(
-                "confidence_interval_lower", 0.0
-            ),
-            "confidence_interval_upper": explanation.get(
-                "confidence_interval_upper", 0.0
-            ),
-            "confidence_level": explanation.get("confidence_level", "unknown"),
-            "agreement_score": explanation.get("agreement_score", 0.0),
-            "model_contributions": {
-                "arima": explanation.get("arima_contribution", 0.0),
-                "gru_mid": explanation.get("gru_mid_contribution", 0.0),
-                "gru_sent": explanation.get("gru_sent_contribution", 0.0),
-                "xgb_hf": explanation.get("xgb_hf_contribution", 0.0),
-            },
-            "top_features": top_features,
-            "sentiment_headlines": sentiment_headlines,
-            "explanation_text": explanation.get("explanation_text", ""),
-            "generated_at": explanation.get("generated_at", ""),
-            "computation_time_seconds": explanation.get(
-                "computation_time_seconds", 0.0
-            ),
-        }
+        return _build_legacy_explanation_response(explanation, explanation_date)
 
     except HTTPException:
         raise
