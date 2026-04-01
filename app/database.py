@@ -11,6 +11,7 @@ import json
 import os
 import math
 import re
+from pathlib import Path
 from collections import defaultdict
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Optional, Any
@@ -32,6 +33,168 @@ DATE_BETWEEN_CLAUSE = " WHERE date >= ? AND date <= ?"
 DATE_FROM_CLAUSE = " WHERE date >= ?"
 DATE_TO_CLAUSE = " WHERE date <= ?"
 PREDICTION_COMPARE_LOOKBACK_BUFFER_DAYS = 45
+PREDICTION_BOUNDS_Z_SCORE_95 = 1.96
+PREDICTION_BOUNDS_DEFAULT_ERROR_STD = 0.015
+COMPARE_ERROR_STD_CANDIDATES = [
+    Path(__file__).resolve().parent.parent / "model_artifacts" / "error_stds_h5.json",
+    Path(__file__).resolve().parent / "newModel" / "error_stds_h5.json",
+]
+
+
+def _parse_error_stds_payload(raw: Any) -> Dict[int, float]:
+    """Normalize error std JSON payload into {horizon: std} mapping."""
+    if not isinstance(raw, dict):
+        return {}
+
+    parsed: Dict[int, float] = {}
+    for k, v in raw.items():
+        try:
+            hk = int(k)
+            hv = float(v)
+        except (TypeError, ValueError):
+            continue
+        if hk >= 1 and hv >= 0:
+            parsed[hk] = hv
+    return parsed
+
+
+def _load_error_stds_from_file(path: Path) -> Dict[int, float]:
+    """Load and parse one error std JSON file, returning empty map on failure."""
+    if not path.exists():
+        return {}
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    return _parse_error_stds_payload(raw)
+
+
+def _load_error_stds_for_compare() -> Dict[int, float]:
+    """Load per-horizon error stds for compare-time bound derivation."""
+    for path in COMPARE_ERROR_STD_CANDIDATES:
+        parsed = _load_error_stds_from_file(path)
+        if parsed:
+            return parsed
+
+    return {}
+
+
+_COMPARE_ERROR_STDS = _load_error_stds_for_compare()
+
+
+def _get_compare_error_std(horizon: int) -> float:
+    """Return horizon std with fallback logic matching prediction behavior."""
+    if horizon in _COMPARE_ERROR_STDS:
+        return float(_COMPARE_ERROR_STDS[horizon])
+
+    if _COMPARE_ERROR_STDS:
+        max_known = max(_COMPARE_ERROR_STDS.keys())
+        if horizon > max_known:
+            return float(_COMPARE_ERROR_STDS[max_known])
+
+    return PREDICTION_BOUNDS_DEFAULT_ERROR_STD
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    """Convert value to float when possible, else return None."""
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_forecast_horizon(forecast: Dict[str, Any], idx: int) -> int:
+    """Return a valid forecast horizon integer."""
+    try:
+        horizon = int(forecast.get("horizon") or idx)
+    except (TypeError, ValueError):
+        horizon = idx
+    return max(1, horizon)
+
+
+def _infer_forecast_return(
+    forecast: Dict[str, Any],
+    pred_price: Optional[float],
+    current_price: float,
+) -> Optional[float]:
+    """Resolve forecasted return from stored value or implied price step."""
+    ret = _safe_float(forecast.get("forecasted_return"))
+    if ret is not None:
+        return ret
+
+    if pred_price is None or pred_price <= 0 or current_price <= 0:
+        return None
+    return math.log(pred_price / current_price)
+
+
+def _derive_bounds_from_return(
+    current_price: float,
+    ret: float,
+    horizon: int,
+) -> tuple[float, float]:
+    """Compute lower/upper bounds using compare-time error stds."""
+    std = _get_compare_error_std(horizon)
+    ret_lower = float(ret) - PREDICTION_BOUNDS_Z_SCORE_95 * std
+    ret_upper = float(ret) + PREDICTION_BOUNDS_Z_SCORE_95 * std
+    lower = max(0.01, float(current_price) * float(math.exp(ret_lower)))
+    upper = max(lower, float(current_price) * float(math.exp(ret_upper)))
+    return lower, upper
+
+
+def _advance_forecast_price(
+    current_price: float,
+    pred_price: Optional[float],
+    ret: Optional[float],
+) -> float:
+    """Advance sequential forecast baseline price for next horizon step."""
+    if pred_price is not None and pred_price > 0:
+        return pred_price
+    if ret is not None:
+        return max(0.01, float(current_price) * float(math.exp(ret)))
+    return current_price
+
+
+def _enrich_forecasts_with_missing_bounds(
+    forecasts: List[Dict[str, Any]],
+    last_price_raw: Any,
+) -> List[Dict[str, Any]]:
+    """Fill missing lower/upper bounds in a forecast run using model-style math."""
+    if not forecasts:
+        return []
+
+    base_price = _safe_float(last_price_raw)
+    if base_price is None or base_price <= 0:
+        return forecasts
+
+    enriched: List[Dict[str, Any]] = []
+    current_price = float(base_price)
+
+    for idx, item in enumerate(forecasts, start=1):
+        if not isinstance(item, dict):
+            continue
+
+        forecast = dict(item)
+        horizon = _resolve_forecast_horizon(forecast, idx)
+
+        pred_price = _safe_float(forecast.get("forecasted_price"))
+        ret = _infer_forecast_return(forecast, pred_price, current_price)
+
+        lower_existing = _safe_float(forecast.get("lower_bound"))
+        upper_existing = _safe_float(forecast.get("upper_bound"))
+        if ret is not None and (lower_existing is None or upper_existing is None):
+            lower, upper = _derive_bounds_from_return(current_price, ret, horizon)
+            forecast["lower_bound"] = round(lower, 2)
+            forecast["upper_bound"] = round(upper, 2)
+
+        current_price = _advance_forecast_price(current_price, pred_price, ret)
+
+        enriched.append(forecast)
+
+    return enriched
 
 
 class _LibsqlClientCursor:
@@ -1842,6 +2005,10 @@ def _collect_predictions_by_target_date(
             continue
 
         forecasts = _parse_forecasts_blob(row.get("forecasts"))
+        forecasts = _enrich_forecasts_with_missing_bounds(
+            forecasts=forecasts,
+            last_price_raw=row.get("last_price"),
+        )
         for forecast in forecasts:
             parsed = _parse_single_forecast_observation(
                 forecast=forecast,
@@ -1893,10 +2060,15 @@ def _parse_single_forecast_observation(
     except (TypeError, ValueError):
         horizon = 14
 
+    lower_bound = _safe_float(forecast.get("lower_bound"))
+    upper_bound = _safe_float(forecast.get("upper_bound"))
+
     return (
         target_date,
         {
             "forecasted_price": pred_price,
+            "lower_bound": lower_bound,
+            "upper_bound": upper_bound,
             "horizon": max(1, horizon),
             "generated_at": str(generated_at_raw),
         },
@@ -1927,6 +2099,28 @@ def _aggregate_predictions(preds: List[Dict[str, Any]]) -> Dict[str, Any]:
     total_weight = sum(weights)
     weighted_predicted = weighted_sum / total_weight if total_weight > 0 else 0.0
 
+    lower_pairs = [
+        (float(p["lower_bound"]), w)
+        for p, w in zip(preds, weights)
+        if p.get("lower_bound") is not None
+    ]
+    upper_pairs = [
+        (float(p["upper_bound"]), w)
+        for p, w in zip(preds, weights)
+        if p.get("upper_bound") is not None
+    ]
+
+    weighted_lower = (
+        sum(v * w for v, w in lower_pairs) / sum(w for _, w in lower_pairs)
+        if lower_pairs
+        else None
+    )
+    weighted_upper = (
+        sum(v * w for v, w in upper_pairs) / sum(w for _, w in upper_pairs)
+        if upper_pairs
+        else None
+    )
+
     sorted_prices = sorted(p["forecasted_price"] for p in preds)
     n = len(sorted_prices)
     if n % 2 == 1:
@@ -1938,6 +2132,8 @@ def _aggregate_predictions(preds: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     return {
         "weighted_predicted": weighted_predicted,
+        "weighted_lower": weighted_lower,
+        "weighted_upper": weighted_upper,
         "median_predicted": median_predicted,
         "latest_predicted": float(latest_pred_rec["forecasted_price"]),
         "prediction_count": len(preds),
@@ -1969,6 +2165,16 @@ def _build_comparison_rows(
                 "date": target_date.strftime("%Y-%m-%d"),
                 "actual_price": round(actual_price, 2),
                 "predicted_price": round(weighted_predicted, 2),
+                "lower_bound": (
+                    round(float(aggregated["weighted_lower"]), 2)
+                    if aggregated.get("weighted_lower") is not None
+                    else None
+                ),
+                "upper_bound": (
+                    round(float(aggregated["weighted_upper"]), 2)
+                    if aggregated.get("weighted_upper") is not None
+                    else None
+                ),
                 "predicted_price_median": round(aggregated["median_predicted"], 2),
                 "predicted_price_latest": round(aggregated["latest_predicted"], 2),
                 "prediction_count": aggregated["prediction_count"],
@@ -2079,7 +2285,7 @@ def get_actual_vs_predicted_until(
             prediction_runs = _query_to_df(
                 conn,
                 """
-                SELECT generated_at, last_price_date, forecasts
+                SELECT generated_at, last_price_date, last_price, forecasts
                 FROM predictions
                 WHERE COALESCE(last_price_date, substr(generated_at, 1, 10)) <= ?
                 ORDER BY generated_at ASC
@@ -2090,7 +2296,7 @@ def get_actual_vs_predicted_until(
             prediction_runs = _query_to_df(
                 conn,
                 """
-                SELECT generated_at, last_price_date, forecasts
+                                SELECT generated_at, last_price_date, last_price, forecasts
                 FROM predictions
                 WHERE COALESCE(last_price_date, substr(generated_at, 1, 10)) >= ?
                   AND COALESCE(last_price_date, substr(generated_at, 1, 10)) <= ?

@@ -291,6 +291,14 @@ class PredictionComparisonDay(BaseModel):
     abs_pct_error: Optional[float] = Field(
         None, description="Absolute percentage error (%)"
     )
+    lower_bound: Optional[float] = Field(
+        None,
+        description="Aggregated lower forecast bound (horizon-weighted mean, USD)",
+    )
+    upper_bound: Optional[float] = Field(
+        None,
+        description="Aggregated upper forecast bound (horizon-weighted mean, USD)",
+    )
 
 
 class PredictionComparisonMetrics(BaseModel):
