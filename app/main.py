@@ -231,6 +231,16 @@ async def _build_prediction_response(
                 {
                     **f,
                     "forecasted_price": round(float(f["forecasted_price"]) * scale, 2),
+                    "lower_bound": (
+                        round(float(f["lower_bound"]) * scale, 2)
+                        if f.get("lower_bound") is not None
+                        else None
+                    ),
+                    "upper_bound": (
+                        round(float(f["upper_bound"]) * scale, 2)
+                        if f.get("upper_bound") is not None
+                        else None
+                    ),
                 }
                 for f in forecasts
             ]

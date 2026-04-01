@@ -1743,6 +1743,8 @@ def get_latest_prediction_fan_chart(
         date_str = str(item.get("date"))
         horizon = int(item.get("horizon", 14))
         point_forecast = float(item.get("forecasted_price", 0.0))
+        model_lower = item.get("lower_bound")
+        model_upper = item.get("upper_bound")
 
         samples = _calibration_pool_for_horizon(
             errors_by_horizon=errors_by_horizon,
@@ -1769,6 +1771,16 @@ def get_latest_prediction_fan_chart(
                 "p50": _apply(q50),
                 "p75": _apply(q75),
                 "p90": _apply(q90),
+                "lower_bound": (
+                    round(float(model_lower), 2)
+                    if model_lower is not None
+                    else None
+                ),
+                "upper_bound": (
+                    round(float(model_upper), 2)
+                    if model_upper is not None
+                    else None
+                ),
                 "sample_count": len(samples),
             }
         )
@@ -1779,7 +1791,8 @@ def get_latest_prediction_fan_chart(
         "last_price": float(latest.get("last_price", 0.0)),
         "calibration_method": (
             "Empirical horizon-wise quantiles from historical signed relative forecast "
-            "errors; neighbor/global pooling fallback when samples are sparse."
+            "errors for p10-p90, plus model-driven 95% lower/upper bounds when present "
+            "in stored forecasts."
         ),
         "fan": fan_points,
     }

@@ -56,6 +56,14 @@ class ForecastDay(BaseModel):
     date: str = Field(..., description="Forecast date")
     forecasted_price: float = Field(..., description="Predicted price (USD)")
     forecasted_return: float = Field(..., description="Predicted log return")
+    lower_bound: Optional[float] = Field(
+        None,
+        description="Lower 95% forecast bound (USD)",
+    )
+    upper_bound: Optional[float] = Field(
+        None,
+        description="Upper 95% forecast bound (USD)",
+    )
     horizon: int = Field(
         ..., ge=1, description="Forecast step index for the active model horizon"
     )
@@ -331,6 +339,14 @@ class FanChartPoint(BaseModel):
     p50: float = Field(..., description="50th percentile forecast price (USD)")
     p75: float = Field(..., description="75th percentile forecast price (USD)")
     p90: float = Field(..., description="90th percentile forecast price (USD)")
+    lower_bound: Optional[float] = Field(
+        None,
+        description="Lower 95% forecast bound from model error stds (USD)",
+    )
+    upper_bound: Optional[float] = Field(
+        None,
+        description="Upper 95% forecast bound from model error stds (USD)",
+    )
     sample_count: int = Field(..., ge=0, description="Calibration samples used")
 
 

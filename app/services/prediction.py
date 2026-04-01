@@ -38,6 +38,8 @@ class PredictionService:
 
     def __init__(self):
         self.artifacts = model_artifacts
+        self._default_error_std = 0.015
+        self._z_score_95 = 1.96
 
     def predict(
         self,
@@ -721,6 +723,11 @@ class PredictionService:
             current_date = self._next_business_day_simple(current_date)
             ret = self._apply_return_adjustments(returns[i], vol_multiplier, i)
             next_price = current_price * np.exp(ret)
+            lower_price, upper_price = self._price_bounds_from_return(
+                current_price=current_price,
+                adjusted_return=ret,
+                horizon=i + 1,
+            )
 
             forecasts.append(
                 {
@@ -728,12 +735,41 @@ class PredictionService:
                     "date": current_date.strftime("%Y-%m-%d"),
                     "forecasted_price": round(next_price, 2),
                     "forecasted_return": round(float(ret), 4),
+                    "lower_bound": round(lower_price, 2),
+                    "upper_bound": round(upper_price, 2),
                 }
             )
 
             current_price = next_price
 
         return forecasts
+
+    def _get_error_std_for_horizon(self, horizon: int) -> float:
+        """Return per-horizon error std from artifacts with safe fallback."""
+        if horizon in self.artifacts.error_stds:
+            return float(self.artifacts.error_stds[horizon])
+
+        if self.artifacts.error_stds:
+            max_known = max(self.artifacts.error_stds.keys())
+            if horizon > max_known:
+                return float(self.artifacts.error_stds[max_known])
+
+        return self._default_error_std
+
+    def _price_bounds_from_return(
+        self,
+        current_price: float,
+        adjusted_return: float,
+        horizon: int,
+    ) -> tuple[float, float]:
+        """Compute 95% forecast price bounds for one horizon step."""
+        std = self._get_error_std_for_horizon(horizon)
+        ret_lower = float(adjusted_return) - self._z_score_95 * std
+        ret_upper = float(adjusted_return) + self._z_score_95 * std
+
+        lower_price = max(0.01, float(current_price) * float(np.exp(ret_lower)))
+        upper_price = max(lower_price, float(current_price) * float(np.exp(ret_upper)))
+        return lower_price, upper_price
 
     def _calculate_volatility_multiplier(self, recent_volatility: float) -> float:
         """Calculate volatility multiplier with caps."""

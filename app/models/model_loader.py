@@ -32,6 +32,7 @@ class ModelArtifacts:
         self.meta_models: Dict[int, Any] = {}
         self.meta_scalers: Dict[int, Any] = {}
         self.xgb_hf_models: Dict[int, Any] = {}
+        self.error_stds: Dict[int, float] = {}
         self.arima_model = None
         self.mid_gru: Optional[MidFreqGRU] = None
         self.sent_gru: Optional[SentimentGRU] = None
@@ -60,6 +61,9 @@ class ModelArtifacts:
 
         # Load XGBoost HF models
         self._load_xgb_models()
+
+        # Load per-horizon forecast error standard deviations (optional)
+        self._load_error_stds()
 
         # Load ARIMA artifact/order
         self._load_arima_artifacts()
@@ -132,6 +136,35 @@ class ModelArtifacts:
         logger.info(
             f"XGBoost HF models loaded for horizons: {list(self.xgb_hf_models.keys())}"
         )
+
+    def _load_error_stds(self) -> None:
+        """Load optional horizon-wise forecast error standard deviations."""
+        self.error_stds = {}
+
+        if not self._is_h5_bundle:
+            return
+
+        error_stds_path = self.artifacts_dir / "error_stds_h5.json"
+        if not error_stds_path.exists():
+            logger.info("No error_stds_h5.json found; forecast bounds will use fallback")
+            return
+
+        with open(error_stds_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+
+        parsed: Dict[int, float] = {}
+        for key, value in raw.items():
+            try:
+                horizon = int(key)
+                std_value = float(value)
+            except (TypeError, ValueError):
+                continue
+
+            if horizon >= 1 and std_value > 0:
+                parsed[horizon] = std_value
+
+        self.error_stds = parsed
+        logger.info("Loaded error stds for horizons: %s", sorted(self.error_stds.keys()))
 
     def _load_arima_artifacts(self) -> None:
         """Load saved ARIMA model (if available) and ARIMA order."""
