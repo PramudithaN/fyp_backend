@@ -119,6 +119,18 @@ PREDICTION_CLOSE_LOCK_BUFFER_MINUTES = int(
     os.getenv("PREDICTION_CLOSE_LOCK_BUFFER_MINUTES", "20")
 )
 
+# ---------------------------------------------------------------------------
+# Daily price sync scheduler
+# ---------------------------------------------------------------------------
+# Runs independently of the prediction scheduler to keep the prices table
+# current every day.  Default: 01:00 UTC (after most market closes).
+PRICE_SYNC_SCHEDULE_ENABLED = (
+    os.getenv("PRICE_SYNC_SCHEDULE_ENABLED", "true").lower() == "true"
+)
+PRICE_SYNC_SCHEDULE_HOUR = int(os.getenv("PRICE_SYNC_SCHEDULE_HOUR", "1"))
+PRICE_SYNC_SCHEDULE_MINUTE = int(os.getenv("PRICE_SYNC_SCHEDULE_MINUTE", "0"))
+PRICE_SYNC_SCHEDULE_TIMEZONE = os.getenv("PRICE_SYNC_SCHEDULE_TIMEZONE", "UTC")
+
 # Explainability scheduler configuration
 # Should run safely after the prediction lock job (PREDICTION_LOCK_SCHEDULE_HOUR:MINUTE).
 EXPLAINABILITY_SCHEDULE_TIMEZONE = os.getenv(

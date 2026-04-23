@@ -20,7 +20,7 @@ from app.config import (
     PREDICTION_LOCK_SCHEDULE_MINUTE,
     PREDICTION_LOCK_SCHEDULE_TIMEZONE,
 )
-from app.database import upsert_daily_prediction
+from app.database import add_bulk_prices, upsert_daily_prediction
 from app.services.prediction import prediction_service
 from app.services.price_fetcher import (
     fetch_latest_prices,
@@ -175,6 +175,19 @@ def run_daily_prediction_job(now_local: Optional[datetime] = None) -> dict:
     prices = fetch_latest_prices(
         lookback_days=180, end_date=local_now.replace(tzinfo=None)
     )
+
+    # Persist the freshly-fetched prices so the compare endpoint always has
+    # up-to-date actuals (the prices table is NOT updated elsewhere).
+    try:
+        price_records = [
+            {"date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"), "price": float(row["price"])}
+            for _, row in prices.iterrows()
+        ]
+        saved = add_bulk_prices(price_records)
+        logger.info("Persisted %d price records to prices table", saved)
+    except Exception as _price_save_exc:
+        logger.error("Failed to persist prices to DB: %s", _price_save_exc, exc_info=True)
+
     based_on_price_date, based_on_price = _resolve_stable_close(
         prices=prices,
         local_now=local_now,

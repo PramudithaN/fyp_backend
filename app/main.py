@@ -79,6 +79,11 @@ from app.services.prediction_scheduler import (
     shutdown_prediction_scheduler,
     trigger_prediction_job_now,
 )
+from app.services.price_sync_scheduler import (
+    init_price_sync_scheduler,
+    shutdown_price_sync_scheduler,
+    trigger_price_sync_now,
+)
 from app.services.upload_prediction import (
     run_prediction_from_uploaded_excel,
     build_upload_excel_template_bytes,
@@ -687,6 +692,20 @@ async def lifespan(app: FastAPI):
             f"Prediction scheduler initialization failed: {e}", exc_info=True
         )
 
+    # Backfill any missing prices on startup, then start the daily price sync scheduler.
+    try:
+        logger.info("Running startup price backfill...")
+        backfill_result = await run_in_threadpool(trigger_price_sync_now)
+        logger.info("Startup price backfill result: %s", backfill_result)
+    except Exception as e:
+        logger.warning("Startup price backfill failed: %s", e, exc_info=True)
+
+    try:
+        init_price_sync_scheduler()
+        logger.info("Daily price sync scheduler initialized")
+    except Exception as e:
+        logger.warning("Price sync scheduler initialization failed: %s", e, exc_info=True)
+
     # Initialize explainability scheduler (must run in async context, not threadpool)
     try:
         from app.services.explainability_scheduler import init_scheduler
@@ -714,6 +733,11 @@ async def lifespan(app: FastAPI):
         shutdown_prediction_scheduler()
     except Exception as e:
         logger.warning(f"Prediction scheduler shutdown failed: {e}")
+
+    try:
+        shutdown_price_sync_scheduler()
+    except Exception as e:
+        logger.warning(f"Price sync scheduler shutdown failed: {e}")
 
     logger.info("Application shutting down...")
 
@@ -1176,6 +1200,31 @@ async def run_locked_prediction_now():
         return await run_in_threadpool(trigger_prediction_job_now)
     except Exception as e:
         logger.error("Manual locked prediction trigger failed", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(
+    "/admin/prices/sync",
+    responses={
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error during price sync",
+        },
+    },
+    tags=["admin"],
+)
+async def admin_sync_prices():
+    """
+    Manually trigger a price backfill from Yahoo Finance.
+
+    Fetches all trading days missing from the prices table up to today
+    and inserts them.  Safe to call at any time — uses INSERT OR REPLACE.
+    """
+    try:
+        result = await run_in_threadpool(trigger_price_sync_now)
+        return result
+    except Exception as e:
+        logger.error("Manual price sync failed", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

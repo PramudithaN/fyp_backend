@@ -868,6 +868,23 @@ def add_bulk_prices(price_records: List[Dict[str, Any]]) -> int:
         conn.close()
 
 
+def get_latest_price_date() -> Optional[str]:
+    """Return the most recent date string (YYYY-MM-DD) stored in the prices table, or None."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT MAX(date) FROM prices")
+        row = cursor.fetchone()
+        if row and row[0]:
+            return str(row[0])
+        return None
+    except Exception as e:
+        logger.error("Error fetching latest price date: %s", e)
+        return None
+    finally:
+        conn.close()
+
+
 def get_prices(days: int = 90) -> pd.DataFrame:
     """Return the most recent N days of stored price data."""
     conn = get_connection()
@@ -2252,30 +2269,41 @@ def get_actual_vs_predicted_until(
     conn = get_connection()
     try:
         # Fetch actual prices up to the requested cutoff date.
+        # Union prices + historical_prices so that dates imported via
+        # import_historical_data.py (historical_prices table) are also matched.
+        # When a date exists in both tables, the live prices row wins.
+        # Use NOT IN subquery (reliable in SQLite) rather than GROUP BY bare-column
+        # priority trick which is undefined behaviour for non-aggregate columns.
         if start_bound is None:
+            cutoff_str = cutoff_date.strftime("%Y-%m-%d")
             actual_df = _query_to_df(
                 conn,
                 """
-                SELECT date, price
-                FROM prices
+                SELECT date, price FROM prices
                 WHERE date <= ?
+                UNION
+                SELECT date, price FROM historical_prices
+                WHERE date <= ?
+                  AND date NOT IN (SELECT date FROM prices WHERE date <= ?)
                 ORDER BY date ASC
                 """,
-                params=(cutoff_date.strftime("%Y-%m-%d"),),
+                params=(cutoff_str, cutoff_str, cutoff_str),
             )
         else:
+            start_str = start_bound.strftime("%Y-%m-%d")
+            cutoff_str = cutoff_date.strftime("%Y-%m-%d")
             actual_df = _query_to_df(
                 conn,
                 """
-                SELECT date, price
-                FROM prices
+                SELECT date, price FROM prices
                 WHERE date >= ? AND date <= ?
+                UNION
+                SELECT date, price FROM historical_prices
+                WHERE date >= ? AND date <= ?
+                  AND date NOT IN (SELECT date FROM prices WHERE date >= ? AND date <= ?)
                 ORDER BY date ASC
                 """,
-                params=(
-                    start_bound.strftime("%Y-%m-%d"),
-                    cutoff_date.strftime("%Y-%m-%d"),
-                ),
+                params=(start_str, cutoff_str, start_str, cutoff_str, start_str, cutoff_str),
             )
 
         if actual_df.empty:
