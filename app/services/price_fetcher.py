@@ -270,6 +270,59 @@ def _build_fast_info_snapshot(
     }
 
 
+def _fetch_prices_from_db_fallback(
+    lookback_days: int, end_date: Optional[datetime]
+) -> pd.DataFrame:
+    """
+    Fallback: retrieve stored Brent oil prices from the database when Yahoo Finance
+    is unavailable.  Returns a DataFrame with columns: date, price.
+
+    Raises:
+        ValueError: If the database also has no usable price data.
+    """
+    try:
+        from app.database import get_prices_for_date_range
+
+        if end_date is None:
+            end_date = datetime.now(UTC)
+
+        start_date = end_date - timedelta(days=lookback_days)
+        start_str = start_date.strftime("%Y-%m-%d")
+        end_str = end_date.strftime("%Y-%m-%d")
+
+        prices = get_prices_for_date_range(start_str, end_str)
+
+        if prices.empty:
+            raise ValueError("No price data found in database fallback.")
+
+        prices = prices[["date", "price"]].copy()
+        prices["date"] = pd.to_datetime(prices["date"]).dt.tz_localize(None)
+        prices = prices.sort_values("date").reset_index(drop=True)
+
+        min_expected = max(1, lookback_days // 2)
+        if len(prices) < min_expected:
+            raise ValueError(
+                f"Insufficient data in database fallback: got {len(prices)} days, "
+                f"need at least {min_expected} for a {lookback_days} day window"
+            )
+
+        logger.warning(
+            "Yahoo Finance unavailable — using database fallback prices "
+            "(%d rows, latest date: %s)",
+            len(prices),
+            prices["date"].iloc[-1].strftime("%Y-%m-%d"),
+        )
+        return prices
+
+    except ValueError:
+        raise
+    except Exception as db_exc:
+        raise ValueError(
+            f"Failed to fetch Brent oil prices: Yahoo Finance unavailable and "
+            f"database fallback also failed: {db_exc}"
+        ) from db_exc
+
+
 def fetch_latest_prices(
     lookback_days: int = 90, end_date: datetime = None
 ) -> pd.DataFrame:
@@ -349,8 +402,8 @@ def fetch_latest_prices(
         return prices
 
     except Exception as e:
-        logger.error(f"Error fetching prices: {e}")
-        raise ValueError(f"Failed to fetch Brent oil prices: {e}")
+        logger.error(f"Error fetching prices from Yahoo Finance: {e}. Attempting database fallback.")
+        return _fetch_prices_from_db_fallback(lookback_days, end_date)
 
 
 def get_last_n_trading_days(prices: pd.DataFrame, n: int = 30) -> pd.DataFrame:
