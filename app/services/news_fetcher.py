@@ -28,6 +28,7 @@ from app.config import (
     PEXELS_API_KEY,
     PEXELS_PER_PAGE,
     PEXELS_TIMEOUT_SECONDS,
+    DEFAULT_ARTICLE_IMAGE_URL,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,6 @@ DEFAULT_IMAGE_QUERY = "energy infrastructure"
 DEFAULT_OIL_QUERY = "oil industry"
 DEFAULT_REFINERY_QUERY = "oil refinery"
 DEFAULT_CRUDE_QUERY = "crude oil"
-DEFAULT_ARTICLE_IMAGE_URL = (
-    "https://images.pexels.com/photos/257700/pexels-photo-257700.jpeg"
-)
 
 HEADLINE_STOP_WORDS = {
     "the",

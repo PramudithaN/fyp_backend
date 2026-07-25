@@ -18,6 +18,8 @@ from typing import List, Dict, Optional, Any
 import pandas as pd
 import logging
 
+from app.config import DEFAULT_ARTICLE_IMAGE_URL
+
 try:
     import libsql_experimental as libsql  # type: ignore
 
@@ -1351,7 +1353,8 @@ def add_news_articles(article_date: str, articles: List[Dict[str, Any]]) -> int:
 
     Each article dict should contain:
         title, description, url, image_url, source, published_at, sentiment_score
-    Duplicate URLs update image_url when an incoming non-empty image URL is available.
+    Duplicate URLs update image_url when an incoming non-empty image URL is available,
+    but they do not overwrite an existing image with the configured fallback default URL.
 
     Returns:
         Number of processed rows.
@@ -1370,6 +1373,11 @@ def add_news_articles(article_date: str, articles: List[Dict[str, Any]]) -> int:
                     image_url = CASE
                         WHEN excluded.image_url IS NOT NULL
                              AND excluded.image_url != ''
+                             AND excluded.image_url != ?
+                        THEN excluded.image_url
+                        WHEN (news_articles.image_url IS NULL OR TRIM(news_articles.image_url) = '')
+                             AND excluded.image_url IS NOT NULL
+                             AND excluded.image_url != ''
                         THEN excluded.image_url
                         ELSE news_articles.image_url
                     END
@@ -1383,6 +1391,7 @@ def add_news_articles(article_date: str, articles: List[Dict[str, Any]]) -> int:
                     art.get("source", ""),
                     art.get("published_at", ""),
                     art.get("sentiment_score"),
+                    DEFAULT_ARTICLE_IMAGE_URL,
                 ),
             )
             count += 1

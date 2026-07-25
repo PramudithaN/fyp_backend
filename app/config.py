@@ -59,6 +59,10 @@ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 # Pexels fallback image settings
 PEXELS_PER_PAGE = int(os.getenv("PEXELS_PER_PAGE", "15"))
 PEXELS_TIMEOUT_SECONDS = int(os.getenv("PEXELS_TIMEOUT_SECONDS", "10"))
+DEFAULT_ARTICLE_IMAGE_URL = os.getenv(
+    "DEFAULT_ARTICLE_IMAGE_URL",
+    "https://images.pexels.com/photos/257700/pexels-photo-257700.jpeg",
+)
 
 # Groq API configuration (for LLM narrative generation)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
