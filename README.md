@@ -1,3 +1,12 @@
+---
+title: Brent Oil Price Prediction Backend
+emoji: "📈"
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # Brent Oil Price Prediction Backend
 
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
