@@ -3,7 +3,7 @@ Pydantic schemas for API request/response models.
 """
 
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional
+from typing import List, Optional, Literal
 from datetime import datetime
 
 from app.models.model_loader import model_artifacts
@@ -160,6 +160,76 @@ class PriceDataResponse(BaseModel):
     data_points: int
     date_range: dict
     prices: List[dict]
+
+
+class BenchmarkQuote(BaseModel):
+    """Single benchmark quote card row."""
+
+    benchmark: Literal["brent", "wti", "opec", "dubai"]
+    display_name: str
+    ticker: Optional[str] = None
+    price: Optional[float] = None
+    as_of: Optional[str] = Field(None, description=DATE_FMT_DESC)
+    quote_type: Literal["direct", "derived"]
+    source: str
+    quality: Literal["model_target", "observed", "indicative"]
+    status: Literal["ok", "estimated", "unavailable"]
+    note: Optional[str] = None
+
+
+class BenchmarkQuotesResponse(BaseModel):
+    """Response containing multi-benchmark quote cards."""
+
+    success: bool
+    currency: Literal["USD"]
+    unit: Literal["bbl"]
+    base_benchmark: Literal["brent"]
+    generated_at: str
+    quotes: List[BenchmarkQuote]
+
+
+class DerivedForecastPoint(BaseModel):
+    """Single forecast row for a target benchmark."""
+
+    date: str = Field(..., description=DATE_FMT_DESC)
+    horizon: int = Field(..., ge=1)
+    benchmark: Literal["brent", "wti", "opec", "dubai"]
+    benchmark_label: str
+    forecast_type: Literal["model", "derived_from_brent"]
+    brent_forecasted_price: float = Field(..., gt=0)
+    forecasted_price: float = Field(..., gt=0)
+    lower_bound: Optional[float] = Field(None, gt=0)
+    upper_bound: Optional[float] = Field(None, gt=0)
+    forecasted_return: Optional[float] = None
+
+
+class DerivedTransformMeta(BaseModel):
+    """Transformation metadata for derived benchmark forecasts."""
+
+    spread: float
+    ratio: float
+    lookback_days: int = Field(..., ge=30, le=365)
+    sample_days: int = Field(..., ge=0)
+    source: str
+    fallback_used: bool
+
+
+class DerivedForecastResponse(BaseModel):
+    """Response for Brent-transformed benchmark forecasts."""
+
+    success: bool
+    target: Literal["brent", "wti", "opec", "dubai"]
+    target_label: str
+    method: Literal["spread", "ratio"]
+    currency: Literal["USD"]
+    unit: Literal["bbl"]
+    quality: Literal["model", "indicative"]
+    disclaimer: str
+    transform: DerivedTransformMeta
+    prediction_date: Optional[str] = None
+    based_on_price_date: Optional[str] = None
+    generated_at: Optional[str] = None
+    forecasts: List[DerivedForecastPoint]
 
 
 class NewsArticle(BaseModel):

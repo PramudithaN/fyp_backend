@@ -70,6 +70,10 @@ from app.services.price_fetcher import (
     fetch_live_price_snapshot,
     get_market_status,
 )
+from app.services.benchmark_service import (
+    get_benchmark_quotes,
+    get_derived_forecast,
+)
 from app.services.prediction import prediction_service
 from app.services.prediction_snapshot import (
     current_prediction_date_local,
@@ -118,6 +122,8 @@ from app.schemas.prediction import (
     PredictionFanResponse,
     NewsArticlesResponse,
     SentimentOverviewResponse,
+    BenchmarkQuotesResponse,
+    DerivedForecastResponse,
 )
 
 # Configure logging
@@ -900,6 +906,82 @@ async def get_prices():
     except Exception as e:
         logger.error(f"Error fetching prices: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/benchmarks/quotes",
+    response_model=BenchmarkQuotesResponse,
+    responses={
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error fetching benchmark quotes",
+        }
+    },
+)
+async def get_benchmark_quotes_api(
+    lookback_days: Annotated[int, Query(ge=30, le=365)] = 60,
+):
+    """
+    Return benchmark cards for Brent/WTI/OPEC/Dubai.
+
+    Notes:
+    - Brent remains the model target benchmark.
+    - Any non-direct quote is marked as derived/indicative.
+    """
+    try:
+        return await run_in_threadpool(
+            partial(get_benchmark_quotes, lookback_days=lookback_days)
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error("Error fetching benchmark quotes: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get(
+    "/benchmarks/derived-forecast",
+    response_model=DerivedForecastResponse,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid benchmark parameters"},
+        503: {
+            "model": ErrorResponse,
+            "description": "No locked Brent forecast available",
+        },
+        500: {
+            "model": ErrorResponse,
+            "description": "Server error deriving benchmark forecast",
+        },
+    },
+)
+async def get_derived_benchmark_forecast(
+    target: Annotated[str, Query(pattern=r"^(brent|wti|opec|dubai)$")] = "brent",
+    method: Annotated[str, Query(pattern=r"^(spread|ratio)$")] = "spread",
+    lookback_days: Annotated[int, Query(ge=30, le=365)] = 60,
+):
+    """
+    Return benchmark forecast by transforming the locked Brent forecast.
+
+    Brent is model-backed. Other benchmarks are explicitly returned as
+    derived_from_brent (indicative only).
+    """
+    try:
+        return await run_in_threadpool(
+            partial(
+                get_derived_forecast,
+                target=target,
+                method=method,
+                lookback_days=lookback_days,
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        err_msg = str(e)
+        if "No locked daily forecast" in err_msg:
+            raise HTTPException(status_code=503, detail=err_msg)
+        logger.error("Error deriving benchmark forecast: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=err_msg)
 
 
 @app.get(
